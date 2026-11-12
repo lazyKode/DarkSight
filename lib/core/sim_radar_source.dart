@@ -32,7 +32,8 @@ import 'tracker.dart';
 ///  * bodies: torso plus limbs or legs with gait motion, breathing chest,
 ///    per-individual size and gait; fans: hub plus three rotating blades
 ///  * multipath: first-order wall images of each body
-///  * clutter drift, transmit leakage, thermal noise
+///  * slow clutter drift (1 % amplitude, 0.02 rad), transmit leakage,
+///    thermal noise
 class SimRadarSource extends RadarSource {
   SimRadarSource(this.scene)
       : frame = PolarFrame(beams: 360, bins: Radar.bins, maxRange: 10);
@@ -509,9 +510,9 @@ class SimRadarSource extends RadarSource {
         final h = _sHash[i];
         final a = _sAmp[i] *
             math.exp(-d * d * _invTwoSigma2) *
-            (1 + 0.08 * math.sin(0.5 * t + h));
+            (1 + 0.01 * math.sin(0.5 * t + h));
         if (a < 1e-5) continue;
-        _tone(_sBin[i], _sPhi[i] + 0.15 * math.sin(0.23 * t + 1.7 * h), a);
+        _tone(_sBin[i], _sPhi[i] + 0.02 * math.sin(0.23 * t + 1.7 * h), a);
       }
     }
     for (int i = 0; i < _dAmp.length; i++) {
@@ -641,8 +642,8 @@ class SimRadarSource extends RadarSource {
         if (d > math.pi) d -= 2 * math.pi;
         if (d < -math.pi) d += 2 * math.pi;
         final h = _sHash[i];
-        add(d, b, _sAmp[i] * (1 + 0.08 * math.sin(0.5 * t + h)),
-            _sPhi[i] + 0.15 * math.sin(0.23 * t + 1.7 * h));
+        add(d, b, _sAmp[i] * (1 + 0.01 * math.sin(0.5 * t + h)),
+            _sPhi[i] + 0.02 * math.sin(0.23 * t + 1.7 * h));
       }
     }
     for (int i = 0; i < _dAmp.length; i++) {
@@ -687,6 +688,43 @@ class SimRadarSource extends RadarSource {
     structure = out;
   }
 
+  /// Multipath ghost check: a track that sits at the mirror image of a
+  /// nearer track across a detected wall is probably that target's
+  /// reflection. Uses detected walls and tracks only.
+  void _tagGhosts() {
+    final ts = tracker.tracks;
+    for (final t in ts) {
+      t.ghostOf = null;
+    }
+    for (final b in ts) {
+      for (final a in ts) {
+        if (identical(a, b) || a.ghostOf != null || a.range >= b.range) continue;
+        for (final w in structure) {
+          if (w.label != 'wall') continue;
+          final horizontal = (w.maxX - w.minX) >= (w.maxY - w.minY);
+          double mx, my;
+          if (horizontal) {
+            final c = (w.minY + w.maxY) / 2;
+            if (a.x < w.minX - 0.5 || a.x > w.maxX + 0.5) continue;
+            mx = a.x;
+            my = 2 * c - a.y;
+          } else {
+            final c = (w.minX + w.maxX) / 2;
+            if (a.y < w.minY - 0.5 || a.y > w.maxY + 0.5) continue;
+            mx = 2 * c - a.x;
+            my = a.y;
+          }
+          final dx = mx - b.x, dy = my - b.y;
+          if (dx * dx + dy * dy < 0.8 * 0.8) {
+            b.ghostOf = a.id;
+            break;
+          }
+        }
+        if (b.ghostOf != null) break;
+      }
+    }
+  }
+
   @override
   void tick(double dt) {
     if (dt > 0.1) dt = 0.1;
@@ -708,6 +746,7 @@ class SimRadarSource extends RadarSource {
       }
     }
     tracker.frame(dt);
+    _tagGhosts();
 
     // Search sweep at frame end.
     _rebuildDynamic();

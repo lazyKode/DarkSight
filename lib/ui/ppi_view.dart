@@ -274,7 +274,8 @@ class PpiPainter extends CustomPainter {
   void _paintTrack(Canvas canvas, Track t,
       Offset Function(double, double) r2p, double scale) {
     final cls = t.classifier.best;
-    final color = classColor(cls);
+    final ghost = t.ghostOf != null;
+    final color = ghost ? kDim : classColor(cls);
     final p = r2p(t.x, t.y);
     final tentative = t.status == TrackStatus.tentative;
     final coasting = t.status == TrackStatus.coasting;
@@ -346,6 +347,9 @@ class PpiPainter extends CustomPainter {
       tag = '$name  ANALYSING';
     } else {
       tag = '$name  ${cls.label} ${(t.classifier.confidence * 100).round()}%';
+    }
+    if (ghost) {
+      tag = '$name  MULTIPATH (T-${t.ghostOf.toString().padLeft(2, '0')})';
     }
     if (coasting) tag = '$tag  (LOST)';
     paintLabel(canvas, tag, p + Offset(h + 4, -h - 4), color.withOpacity(alpha),

@@ -40,6 +40,7 @@ import 'package:flutter_test/flutter_test.dart';
   Track? best;
   double bd = 1e9;
   for (final t in radar.tracker.tracks) {
+    if (t.ghostOf != null) continue;
     final dx = t.x - (body.x - scene.radarX), dy = t.y - (body.y - scene.radarY);
     final d = math.sqrt(dx * dx + dy * dy);
     if (d < bd) {
@@ -53,7 +54,8 @@ import 'package:flutter_test/flutter_test.dart';
       '${radar.tracker.created}: ' +
       radar.tracker.tracks
           .map((t) => 'T${t.id}(${t.x.toStringAsFixed(1)},${t.y.toStringAsFixed(1)} '
-              '${t.status.name} ex=${t.excess.toStringAsFixed(1)})')
+              '${t.status.name} ex=${t.excess.toStringAsFixed(1)}'
+              '${t.ghostOf != null ? ' ghost' : ''})')
           .join(' '));
   return (track: bd < 1.2 ? best : null, body: body, radar: radar);
 }

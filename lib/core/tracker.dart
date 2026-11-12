@@ -25,6 +25,9 @@ class Track {
   double excess = 0;
   int walls = 0; // detected walls between radar and target
 
+  /// Set when this track looks like a wall reflection of track [ghostOf].
+  int? ghostOf;
+
   /// Smoothed ground speed.
   double speed = 0;
 

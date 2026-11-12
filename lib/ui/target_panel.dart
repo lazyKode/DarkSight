@@ -56,7 +56,7 @@ class _TargetPanelState extends State<TargetPanel> {
       if (t.id == sel) return t;
     }
     for (final t in ts) {
-      if (t.status != TrackStatus.tentative) return t;
+      if (t.status != TrackStatus.tentative && t.ghostOf == null) return t;
     }
     return ts.isEmpty ? null : ts.first;
   }
@@ -109,11 +109,13 @@ class _TargetPanelState extends State<TargetPanel> {
         final post = t.classifier.posterior;
         final f = t.features;
         final color = classColor(cls);
-        final status = switch (t.status) {
-          TrackStatus.tentative => 'ACQUIRING',
-          TrackStatus.confirmed => 'TRACKING',
-          TrackStatus.coasting => 'SIGNAL LOST',
-        };
+        final status = t.ghostOf != null
+            ? 'LIKELY MULTIPATH OF T-${t.ghostOf.toString().padLeft(2, '0')}'
+            : switch (t.status) {
+                TrackStatus.tentative => 'ACQUIRING',
+                TrackStatus.confirmed => 'TRACKING',
+                TrackStatus.coasting => 'SIGNAL LOST',
+              };
         return ListView(
           padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
           children: [
