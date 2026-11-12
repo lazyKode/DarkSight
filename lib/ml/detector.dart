@@ -28,12 +28,14 @@ class RadarDetector {
   final Uint16List _vRun = Uint16List(g * g);
   final Int32List _stack = Int32List(g * g);
   final Uint8List _wall = Uint8List(g * g);
+  Float32List _row = Float32List(0);
   double _cell = 0.2, _maxR = 10;
   final Float32List _pre = Float32List(1025);
 
   List<Detection> detect(PolarFrame f) {
     final beams = f.beams, bins = f.bins;
-    final vals = f.values, prev = f.previous;
+    final vals = f.values, mot = f.motion;
+    if (_row.length != bins) _row = Float32List(bins);
     final maxR = f.maxRange;
     final cell = 2 * maxR / g;
     _cell = cell;
@@ -77,8 +79,22 @@ class RadarDetector {
         final gx = ((r * cs + maxR) / cell).floor();
         final gy = ((r * sn + maxR) / cell).floor();
         if (gx < 0 || gy < 0 || gx >= g || gy >= g) continue;
-        final moving = (v - prev[base + k]).abs() > 0.17; // ~10 dB change
-        _occ[gy * g + gx] |= moving ? 3 : 1;
+        _occ[gy * g + gx] |= 1;
+      }
+      // Motion: two-pulse MTI residual well above this beam's median.
+      if (f.time - f.beamTime[b] > 0.6) continue; // stale beam
+      for (int k = 0; k < bins; k++) {
+        _row[k] = mot[base + k];
+      }
+      final sorted = Float32List.fromList(_row)..sort();
+      final floor = sorted[bins ~/ 2];
+      for (int k = 6; k < bins; k++) {
+        if (mot[base + k] < floor + 0.2) continue; // 12 dB over the floor
+        final r = (k + 0.5) / bins * maxR;
+        final gx = ((r * cs + maxR) / cell).floor();
+        final gy = ((r * sn + maxR) / cell).floor();
+        if (gx < 0 || gy < 0 || gx >= g || gy >= g) continue;
+        _occ[gy * g + gx] |= 3;
       }
     }
 

@@ -92,6 +92,13 @@ class SimRadarSource extends RadarSource {
   final Fft _fft = Fft(_n);
   final Float64List _re = Float64List(_n);
   final Float64List _im = Float64List(_n);
+  final Float64List _re2 = Float64List(_n);
+  final Float64List _im2 = Float64List(_n);
+
+  // Snapshots of the dynamic scatterer set at recent chirp times, for the
+  // search sweep's two-pulse MTI.
+  final List<List<Float64List>> _snap = [];
+  int _snapHead = 0;
   final math.Random _rng = math.Random(7);
   final Float64List _resp = Float64List(2);
 
@@ -437,13 +444,39 @@ class SimRadarSource extends RadarSource {
     }
   }
 
+  void _snapshotDynamic() {
+    final snap = [
+      Float64List.fromList(_dBearing),
+      Float64List.fromList(_dBin),
+      Float64List.fromList(_dAmp),
+      Float64List.fromList(_dPhi),
+    ];
+    const keep = Radar.mtiDelayChirps + 1;
+    if (_snap.length < keep) {
+      _snap.add(snap);
+      _snapHead = _snap.length % keep;
+    } else {
+      _snap[_snapHead] = snap;
+      _snapHead = (_snapHead + 1) % keep;
+    }
+  }
+
+  /// Dynamic scatterers as they were [Radar.mtiDelayChirps] chirps ago (or
+  /// the oldest available).
+  List<Float64List>? get _delayed {
+    if (_snap.isEmpty) return null;
+    if (_snap.length < Radar.mtiDelayChirps + 1) return _snap.first;
+    return _snap[_snapHead]; // oldest in a full ring
+  }
+
   // ---- search: one chirp per beam ----
 
-  void _tone(double bin, double phase, double a) {
+  void _tone(double bin, double phase, double a,
+      [Float64List? reBuf, Float64List? imBuf]) {
     final w = 2 * math.pi * bin / _n;
     final wr = math.cos(w), wi = math.sin(w);
     double pr = a * math.cos(phase), pq = a * math.sin(phase);
-    final re = _re, im = _im;
+    final re = reBuf ?? _re, im = imBuf ?? _im;
     for (int n = 0; n < _n; n++) {
       re[n] += pr;
       im[n] += pq;
@@ -514,6 +547,46 @@ class SimRadarSource extends RadarSource {
       vals[base + k] = v;
     }
     frame.beamTime[b] = t;
+
+    // Two-pulse MTI: the same beam a few chirps earlier, subtracted. Static
+    // returns cancel exactly; anything that moved does not.
+    final re2 = _re2, im2 = _im2;
+    re2.fillRange(0, _n, 0);
+    im2.fillRange(0, _n, 0);
+    for (int i = 0; i < _dAmp.length; i++) {
+      double d = _dBearing[i] - th;
+      if (d > math.pi) d -= 2 * math.pi;
+      if (d < -math.pi) d += 2 * math.pi;
+      if (d.abs() > 4 * _beamSigma) continue;
+      _tone(_dBin[i], _dPhi[i], _dAmp[i] * math.exp(-d * d * _invTwoSigma2),
+          re2, im2);
+    }
+    final old = _delayed;
+    if (old != null) {
+      final ob = old[0], ok = old[1], oa = old[2], op = old[3];
+      for (int i = 0; i < oa.length; i++) {
+        double d = ob[i] - th;
+        if (d > math.pi) d -= 2 * math.pi;
+        if (d < -math.pi) d += 2 * math.pi;
+        if (d.abs() > 4 * _beamSigma) continue;
+        _tone(ok[i], op[i], -oa[i] * math.exp(-d * d * _invTwoSigma2),
+            re2, im2);
+      }
+    }
+    final ms = sigma * math.sqrt2; // difference of two noisy chirps
+    for (int n = 0; n < _n; n++) {
+      re2[n] = (re2[n] + ms * _gauss()) * hann[n];
+      im2[n] = (im2[n] + ms * _gauss()) * hann[n];
+    }
+    _fft.transform(re2, im2);
+    final mot = frame.motion;
+    for (int k = 0; k < bins; k++) {
+      final p = (re2[k] * re2[k] + im2[k] * im2[k]) * norm;
+      double v = (4.342944819 * math.log(p + 1e-12) + 60) / 60;
+      if (v < 0) v = 0;
+      if (v > 1) v = 1;
+      mot[base + k] = v;
+    }
   }
 
   // ---- track dwell: one chirp, two lobes, one range gate ----
@@ -546,17 +619,19 @@ class SimRadarSource extends RadarSource {
     final lo = k0 - Radar.gate ~/ 2 - HannResponse.span;
     final hi = k0 + Radar.gate ~/ 2 + HannResponse.span;
     final t = _time;
-    final limit = 4 * _beamSigma;
+    const limit = 4 * Radar.dwellSigma;
+    const inv2 = 1 / (2 * Radar.dwellSigma * Radar.dwellSigma);
 
     void add(double d, double bin, double a, double phase) {
       if (bin < lo || bin > hi || d.abs() > limit + sq) return;
-      final gL = math.exp(-(d + sq) * (d + sq) * _invTwoSigma2);
-      final gR = math.exp(-(d - sq) * (d - sq) * _invTwoSigma2);
+      final gL = math.exp(-(d + sq) * (d + sq) * inv2);
+      final gR = math.exp(-(d - sq) * (d - sq) * inv2);
       _accGate(bin, k0, a, phase, gL, gR);
     }
 
     final deg = (th * 180 / math.pi).floor();
-    for (int o = -6; o <= 6; o++) {
+    const span = 28; // degrees: 4 sigma + squint
+    for (int o = -span; o <= span; o++) {
       final bucket = _buckets[((deg + o) % 360 + 360) % 360];
       for (int q = 0; q < bucket.length; q++) {
         final i = bucket[q];
@@ -626,11 +701,10 @@ class SimRadarSource extends RadarSource {
       _chirpAcc -= step;
       _time += step;
       if (playing) _animate(step);
-      if (tracker.tracks.isNotEmpty) {
-        _rebuildDynamic();
-        for (final t in tracker.tracks) {
-          _dwellChirp(t);
-        }
+      _rebuildDynamic();
+      _snapshotDynamic();
+      for (final t in tracker.tracks) {
+        _dwellChirp(t);
       }
     }
     tracker.frame(dt);

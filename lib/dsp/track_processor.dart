@@ -51,6 +51,7 @@ class TrackProcessor {
 
   static const int g = Radar.gate;
   static const int half = Radar.gate ~/ 2;
+  static const int sigHalf = Radar.sigGate ~/ 2;
   static const int nd = Radar.nDoppler;
   static const int maxCols = 400; // 12.5 s of columns
   static const int slowLen = 1024; // chirps kept for the spectrogram (4 s)
@@ -111,7 +112,7 @@ class TrackProcessor {
       w2 += w * w;
     }
     final s = _sigmaN;
-    return 2 * s * s * w2 * g;
+    return 2 * s * s * w2 * Radar.sigGate;
   }
 
   /// Clears the clutter map, e.g. after the dwell beam jumps.
@@ -156,6 +157,7 @@ class TrackProcessor {
         _binPow[jj] += p;
         _cross[jj] += ydr * ysr + ydi * ysi; // Re(D conj(S))
       }
+      if ((j - half).abs() > sigHalf) continue;
       _gatePow += p;
       if ((k & 1) == 0) {
         gRe += ysr;
@@ -208,13 +210,13 @@ class TrackProcessor {
       cSum += _cross[j] / n;
       pSum += _binPow[j] / n;
     }
-    final excess = _gatePow / n / (g * s2) - 1;
+    final excess = _gatePow / n / (Radar.sigGate * s2) - 1;
     double range = k0 * 1.0, angle = 0;
     if (wSum > 0) {
       range = kSum / wSum;
       final ratio = (cSum / math.max(pSum, 1e-18)).clamp(-0.95, 0.95);
       final atanh = 0.5 * math.log((1 + ratio) / (1 - ratio));
-      angle = Radar.beamSigma * Radar.beamSigma / Radar.squint * atanh;
+      angle = Radar.dwellSigma * Radar.dwellSigma / Radar.squint * atanh;
     }
     final vr = math.atan2(_ppIm, _ppRe) / (4 * math.pi) * Radar.lambda * Radar.prf;
 
@@ -365,7 +367,7 @@ class TrackProcessor {
     for (int i = 0; i < n; i++) {
       p += _colPow[(colHead - 1 - i + maxCols) % maxCols] / n;
     }
-    p -= 2 * _sigmaN * _sigmaN * g;
+    p -= 2 * _sigmaN * _sigmaN * Radar.sigGate;
     final a2 = math.max(p, 1e-14) / HannResponse.gatePowerFactor();
     final att2 = math.pow(Radar.wallLoss, 2 * walls).toDouble();
     final rcs =

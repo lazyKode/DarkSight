@@ -120,8 +120,14 @@ class TargetClassifier {
       rcsMoving =
           rcsMoving.isNaN ? f.rcsDbsm : rcsMoving + a * (f.rcsDbsm - rcsMoving);
     }
+    // A still body is mostly removed by MTI, so its instantaneous RCS reads
+    // low. Use the RCS measured while it moved; failing that, trust the
+    // instantaneous value only for strongly spinning targets (machinery).
+    final double? rcs = rcsMoving.isFinite
+        ? rcsMoving
+        : (moving || f.span > 2.0 ? f.rcsDbsm : null);
     final x = <String, double>{
-      'rcs': rcsMoving.isNaN ? f.rcsDbsm : rcsMoving,
+      if (rcs != null && rcs.isFinite) 'rcs': rcs,
       'span': math.log(math.max(f.span, 0.25)),
       'sym': f.symmetry,
       if (f.cadenceSnr > 4) 'cad': math.log(math.max(f.cadence, 0.5)),

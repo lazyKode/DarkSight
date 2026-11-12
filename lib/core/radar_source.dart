@@ -6,6 +6,7 @@ class PolarFrame {
   PolarFrame({required this.beams, required this.bins, required this.maxRange})
       : values = Float32List(beams * bins),
         previous = Float32List(beams * bins),
+        motion = Float32List(beams * bins),
         beamTime = Float64List(beams) {
     clear();
   }
@@ -23,6 +24,11 @@ class PolarFrame {
   /// sweep-to-sweep change detection (moving-target indication).
   final Float32List previous;
 
+  /// Two-pulse MTI residual per cell, same log scale as [values]: what
+  /// changed between two chirps a few milliseconds apart. Zero where the
+  /// source has no MTI.
+  final Float32List motion;
+
   /// Source time (s) at which each beam was last refreshed.
   final Float64List beamTime;
 
@@ -35,6 +41,7 @@ class PolarFrame {
   void clear() {
     values.fillRange(0, values.length, 0);
     previous.fillRange(0, previous.length, 0);
+    motion.fillRange(0, motion.length, 0);
     beamTime.fillRange(0, beams, -1e9);
   }
 }

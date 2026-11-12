@@ -10,14 +10,25 @@ class Radar {
   static const double prf = 256; // track-dwell chirp rate, Hz
   static const double gain = 4; // system gain: amplitude = G sqrt(rcs) / r^2
 
-  /// Two-way beam: amplitude gain exp(-d^2 / 2 sigma^2).
+  /// Search beam, two-way: amplitude gain exp(-d^2 / 2 sigma^2).
   static const double beamSigma = 1.4 * math.pi / 180;
 
-  /// Monopulse: two receive lobes squinted +/- this angle.
-  static const double squint = 1.0 * math.pi / 180;
+  /// Track-dwell beam (wider, so a target found by the sweep is inside it
+  /// straight away), two-way sigma.
+  static const double dwellSigma = 6.0 * math.pi / 180;
 
-  /// Range gate (bins) processed around each track.
-  static const int gate = 15;
+  /// Monopulse: two receive lobes squinted +/- this angle.
+  static const double squint = 4.0 * math.pi / 180;
+
+  /// Range gate (bins) received around each track: wide enough to acquire
+  /// a target from a search detection (+/- 0.75 m at 10 m range window).
+  static const int gate = 31;
+
+  /// Central part of the gate used for the target signature.
+  static const int sigGate = 15;
+
+  /// Search-sweep MTI: second chirp this long after the first.
+  static const int mtiDelayChirps = 4;
 
   /// Slow-time FFT length and hop for the micro-Doppler spectrogram.
   static const int nDoppler = 64;
@@ -39,7 +50,7 @@ class Radar {
 
   /// Boresight gain of each monopulse lobe.
   static final double lobeGain =
-      math.exp(-squint * squint / (2 * beamSigma * beamSigma));
+      math.exp(-squint * squint / (2 * dwellSigma * dwellSigma));
 }
 
 /// Response of bin k of the Hann-windowed range FFT to a unit tone at
@@ -103,12 +114,12 @@ class HannResponse {
     return true;
   }
 
-  /// Sum of |response|^2 over a gate of [Radar.gate] bins centred on the
+  /// Sum of |response|^2 over the [Radar.sigGate] bins centred on the
   /// tone: converts measured gate power to tone amplitude^2.
   static double gatePowerFactor() {
     final o = Float64List(2);
     double s = 0;
-    for (int k = -(Radar.gate ~/ 2); k <= Radar.gate ~/ 2; k++) {
+    for (int k = -(Radar.sigGate ~/ 2); k <= Radar.sigGate ~/ 2; k++) {
       at(k.toDouble(), o);
       s += o[0] * o[0] + o[1] * o[1];
     }
