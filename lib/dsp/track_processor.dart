@@ -12,6 +12,10 @@ class ClutterMap {
   final Float64List sr = Float64List(len), si = Float64List(len);
   final Float64List dr = Float64List(len), di = Float64List(len);
   final Uint8List seen = Uint8List(len);
+
+  /// Samples averaged per bin (capped): a new map learns as a running mean,
+  /// then settles into the 2 s exponential average.
+  final Uint16List count = Uint16List(len);
 }
 
 /// One position/velocity measurement from a block of dwell chirps.
@@ -145,13 +149,17 @@ class TrackProcessor {
         cm.dr[m] = dr;
         cm.di[m] = di;
         cm.seen[m] = 1;
+        cm.count[m] = 1;
       }
       final ysr = sr - cm.sr[m], ysi = si - cm.si[m];
       final ydr = dr - cm.dr[m], ydi = di - cm.di[m];
-      cm.sr[m] += _clutterA * ysr;
-      cm.si[m] += _clutterA * ysi;
-      cm.dr[m] += _clutterA * ydr;
-      cm.di[m] += _clutterA * ydi;
+      final c = cm.count[m];
+      final a = c < 512 ? math.max(1.0 / (c + 1), _clutterA) : _clutterA;
+      if (c < 512) cm.count[m] = c + 1;
+      cm.sr[m] += a * ysr;
+      cm.si[m] += a * ysi;
+      cm.dr[m] += a * ydr;
+      cm.di[m] += a * ydi;
       final p = ysr * ysr + ysi * ysi;
       // Bins relative to the block's first gate position.
       final jj = k - (_blockK0 - half);
