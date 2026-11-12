@@ -13,7 +13,7 @@ class AppSettings {
     this.personSpeed = 0.8,
     this.trajectory = 0,
     this.colormap = 0,
-    this.aiOverlay = false,
+    this.aiOverlay = true,
     this.ghostPlan = true,
     this.csiBannerSeen = false,
   });
@@ -92,7 +92,7 @@ class SettingsNotifier extends Notifier<AppSettings> {
         personSpeed: p.getDouble('personSpeed'),
         trajectory: p.getInt('trajectory'),
         colormap: p.getInt('colormap'),
-        aiOverlay: p.getBool('aiOverlay'),
+        aiOverlay: p.getBool('aiOverlay2'),
         ghostPlan: p.getBool('ghostPlan'),
         csiBannerSeen: p.getBool('csiBannerSeen'),
       );
@@ -112,7 +112,7 @@ class SettingsNotifier extends Notifier<AppSettings> {
     p.setDouble('personSpeed', s.personSpeed);
     p.setInt('trajectory', s.trajectory);
     p.setInt('colormap', s.colormap);
-    p.setBool('aiOverlay', s.aiOverlay);
+    p.setBool('aiOverlay2', s.aiOverlay);
     p.setBool('ghostPlan', s.ghostPlan);
     p.setBool('csiBannerSeen', s.csiBannerSeen);
   }
