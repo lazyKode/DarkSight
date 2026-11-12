@@ -9,16 +9,14 @@ Flutter (Dart 3), dark-only, three tiers behind one mode switch (SIM / CSI / SDR
 
 | Tier | What it does | State |
 |---|---|---|
-| 1. Simulation | Synthetic rotating-beam FMCW radar over an editable floor plan, PPI view, detector overlay, photo export | Complete |
+| 1. Simulation | Simulated 2.4 GHz tracking radar over an editable floor plan: search sweep, monopulse track dwell, micro-Doppler, breathing, human / dog / cat / machinery classification, photo export | Complete |
 | 2. Wi-Fi sensing | Presence/motion from the phone's Wi-Fi | RSSI fallback working (Android); raw CSI is a TODO |
 | 3. External radar | Pairing flow, DSP chain, three views, overlay | Runs end to end on a built-in mock IQ stream and on UDP range-Doppler frames; real device decoders are TODOs |
 
-> **Build status.** The Dart code in this repo was written without access to
-> a Flutter toolchain, so it has not yet been through `flutter analyze` or a
-> device run. The native C++ core was compiled and tested, and the simulator
-> and detector maths were checked with a numerical port. Expect to fix a few
-> analyzer complaints on first build; `flutter analyze` then `flutter test`
-> is the fastest way to find them.
+> **Build status.** Every push runs `flutter analyze` and `flutter test` in
+> GitHub Actions (including the end-to-end classification tests). Pushes to
+> `main` also build the APK, the unsigned IPA and the web app, and deploy
+> the web app to Pages.
 
 ## Setup
 
@@ -51,40 +49,96 @@ argument to `connect` (`lib/platform/ble_scanner.dart`).
 
 ## Tier 1: simulation
 
-`lib/core/sim_radar_source.dart`. For each 1 degree beam the engine
-synthesises one 256-sample chirp of complex baseband signal and FFTs it into
-a range profile; the image is whatever the processing recovers.
+The simulator behaves like a phased-array tracking radar at 2.4 GHz.
+`lib/core/sim_radar_source.dart` plays the hardware: it is the only code
+that knows what is in the room. Everything after the receiver (tracking,
+signature analysis, classification) works from the radio samples alone, and
+a test (`test/classification_test.dart`) checks that none of that code
+imports the scene.
 
-- Walls: point scatterers every 8 cm, specular-weighted. Door objects cut
-  gaps. Furniture: perimeter scatterers.
-- Person: torso plus four limb scatterers with gait swing, about 6 dB lost
-  per wall crossed.
-- Multipath: each person is mirrored in every wall that can reflect them
-  (wall-person-wall path at the image position, plus a weaker mixed path).
-- Thermal noise, transmit leakage at the centre, slow clutter drift.
-- Trajectories: circle, patrol, wander; speed 0 to 2 m/s.
+**Scene.** Walls, door gaps, furniture, and four kinds of moving thing:
+people, dogs, cats and fans. Each individual gets its own size, gait and
+breathing rate drawn around a population mean.
 
-Rendering (`lib/ui/ppi_view.dart`): polar buffer to a 360 px RGBA image via
-a lookup table with per-beam phosphor decay, uploaded as a GPU image, with
-sweep glow, range rings, 20 % ghosted floor plan and boxes drawn as vectors
-on top. Dragging a person re-illuminates the sectors they left and entered
-on the next frame, so the image follows the finger rather than the sweep.
+| | Radar cross-section | Motion model | Breathing |
+|---|---|---|---|
+| Person | ~0.8 m² | torso, two arms, two legs; step rate rises with speed | 12–20 /min, ~4 mm chest |
+| Dog | ~0.15 m² | torso, four legs (trot); walks and rests in bouts | 18–34 /min |
+| Cat | ~0.03 m² | as dog, smaller, faster legs | 20–36 /min |
+| Fan | ~0.3 m² | hub + three blades at 2–4.5 rev/s | none |
 
-Controls (tune button): sweep rate, range window, noise, person speed,
-trajectory, play/pause, colormap, AI overlay, ghost plan.
+**Physics.** Point targets follow the radar equation (amplitude ∝ √RCS / r²),
+walls return like flat plates (∝ 1/r), and each wall crossed costs 6 dB. It
+also models first-order wall multipath, very slow clutter drift, transmit
+leakage and thermal noise.
 
-**AI overlay.** A classical detector, not a neural network
-(`lib/ml/detector.dart`): CA-CFAR, sweep-to-sweep change detection,
-run-length wall extraction, connected components, size/motion rules, and a
-short track memory. Labels: person / object / wall. Multipath ghosts get
-labelled "person" too, as they would on a real set. `models/README.md` has
-the plan for training and dropping in a TFLite / Core ML model behind the
-same interface.
+**The radar runs two jobs, interleaved:**
 
-**Photo mode.** Freezes the frame, resamples to a square, histogram stretch,
-unsharp mask, green intensifier palette, vignette, grain, scan lines, HUD,
-then PNG via the share sheet. It is a top-down map styled as night vision,
-not a camera-like view of the room.
+1. *Search sweep* (the PPI picture). One 256-sample chirp per degree, FFT
+   to a range profile, plus a second chirp 15.6 ms later to give a two-pulse
+   MTI. Anything that changed between them is motion, and motion starts a
+   track.
+2. *Track dwell.* For every track the beam stares at the target at 256
+   chirps/s with two squinted receive lobes (amplitude-comparison
+   monopulse) over a 31-bin range gate. `lib/dsp/track_processor.dart`
+   then:
+   - subtracts a per-range-bin clutter map (MTI), which removes walls and
+     furniture
+   - measures range (power centroid), angle (monopulse ratio) and radial
+     velocity (pulse-pair) 32 times a second, feeding an alpha-beta tracker
+     (`lib/core/tracker.dart`)
+   - builds a micro-Doppler spectrogram (64-point FFT every 8 chirps,
+     ±8 m/s, 0.25 m/s resolution)
+   - extracts the signature:
+     - **RCS**: gate power corrected for range⁴ and for the number of walls
+       the search sweep has detected along the line of sight
+     - **micro-Doppler span**: how fast the limbs move relative to the body
+     - **symmetry**: rotating machinery spreads evenly either side of zero
+     - **cadence**: the cadence-velocity diagram, i.e. the periodicity of
+       each Doppler bin, which gives gait rhythm and blade rate
+     - **breathing rate**: once the target has been still for 10 s, from
+       the chest's phase modulation, PCA-demodulated and FFT'd
+
+**Classification** (`lib/ml/target_classifier.dart`). A Gaussian
+naive-Bayes model over those features, with separate tables for moving and
+still targets. Evidence is fused over the life of the track with about 20 s
+of memory. The class distributions were fitted with
+`tools/classifier_proto/` (a NumPy model of the same chain) on 220 labelled
+synthetic tracks and checked on 165 held-out ones:
+
+| True \ predicted | Human | Dog | Cat | Machinery |
+|---|---|---|---|---|
+| Human | 42 | 3 | 0 | 0 |
+| Dog | 4 | 32 | 8 | 0 |
+| Cat | 0 | 1 | 34 | 0 |
+| Machinery | 0 | 0 | 1 | 27 |
+
+That is from single 10-second looks. Fusing 30 s of evidence took the
+held-out accuracy from 33/39 to 35/39. The app's end-to-end test
+places each kind of target in and behind walls and checks the label
+(`flutter test test/classification_test.dart`).
+
+**Multipath ghosts.** A track at the mirror image of a nearer track across a
+detected wall is labelled as that target's reflection instead of being
+counted as another target.
+
+**What this does not prove.** The class models were fitted to simulated
+bodies, so the simulator and classifier share assumptions. On real hardware
+the tables must be refitted from recorded, labelled data. A cat 6 m away
+behind a wall is below the noise at these settings, as it would be on a
+real 2.4 GHz radar. A body that never moves is not picked up by the search,
+because motion starts tracks.
+
+**Display.** The PPI shows the search picture (inferno colormap, phosphor
+persistence, 20 % ghosted plan of walls and furniture only) with track
+brackets, IDs, trails, velocity vectors and a lock reticle. The **Targets**
+panel (tap a track) shows the class probabilities, telemetry (range,
+bearing, speed, heading, radial velocity, walls), the signature values, a
+live micro-Doppler waterfall and the chest-motion trace.
+
+**Photo mode.** Freezes the frame, resamples it to a square, then applies a
+histogram stretch, unsharp mask, green intensifier palette, vignette, grain,
+scan lines and a HUD, and exports a PNG via the share sheet.
 
 ## Tier 2: Wi-Fi sensing
 

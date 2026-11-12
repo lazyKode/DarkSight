@@ -48,15 +48,15 @@ import 'package:flutter_test/flutter_test.dart';
       best = t;
     }
   }
+  final list = radar.tracker.tracks
+      .map((t) => 'T${t.id}(${t.x.toStringAsFixed(1)},${t.y.toStringAsFixed(1)} '
+          '${t.status.name} ex=${t.excess.toStringAsFixed(1)}'
+          '${t.ghostOf != null ? ' ghost' : ''})')
+      .join(' ');
   // ignore: avoid_print
   print('  ${kind.name} truth (${(body.x - scene.radarX).toStringAsFixed(1)}, '
       '${(body.y - scene.radarY).toStringAsFixed(1)}) tracks created '
-      '${radar.tracker.created}: ' +
-      radar.tracker.tracks
-          .map((t) => 'T${t.id}(${t.x.toStringAsFixed(1)},${t.y.toStringAsFixed(1)} '
-              '${t.status.name} ex=${t.excess.toStringAsFixed(1)}'
-              '${t.ghostOf != null ? ' ghost' : ''})')
-          .join(' '));
+      '${radar.tracker.created}: $list');
   return (track: bd < 1.2 ? best : null, body: body, radar: radar);
 }
 

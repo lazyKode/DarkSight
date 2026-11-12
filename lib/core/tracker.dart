@@ -11,7 +11,14 @@ enum TrackStatus { tentative, confirmed, coasting }
 /// (x right, y down on screen).
 class Track {
   Track(this.id, this.x, this.y, double noise)
-      : processor = TrackProcessor(noise);
+      : processor = TrackProcessor(noise) {
+    beamBearing = bearing;
+  }
+
+  /// Where the dwell beam points. Held steady (static clutter must look the
+  /// same from chirp to chirp for MTI to cancel it) and re-pointed only when
+  /// the target drifts more than 1.5 degrees off it.
+  double beamBearing = 0;
 
   final int id;
   double x, y;
@@ -89,7 +96,7 @@ class Tracker {
         if (t.sinceEvidence > 0.5) {
           t.x += 0.5 * (x - t.x);
           t.y += 0.5 * (y - t.y);
-          t.processor.resetClutter();
+          t.beamBearing = t.bearing;
         }
         return;
       }
@@ -103,7 +110,7 @@ class Tracker {
   /// Called by the radar after each dwell chirp for [t], with the channel
   /// buffers filled.
   void onChirp(Track t, int k0) {
-    final m = t.processor.push(k0, t.bearing, lr, li, rr, ri);
+    final m = t.processor.push(k0, t.beamBearing, lr, li, rr, ri);
     if (m != null) _measure(t, m, Radar.hop / Radar.prf);
   }
 
@@ -115,7 +122,7 @@ class Tracker {
     if (m.excess > 0.35) {
       t.sinceEvidence = 0;
       final r = binToM(m.range);
-      final th = t.bearing + m.angleOffset;
+      final th = t.beamBearing + m.angleOffset;
       final mx = r * math.cos(th), my = r * math.sin(th);
       final ex = mx - t.x, ey = my - t.y;
       final e = math.sqrt(ex * ex + ey * ey);
@@ -138,6 +145,10 @@ class Tracker {
       t.vy *= 2.5 / v;
     }
     t.speed += 0.08 * (math.min(v, 2.5) - t.speed);
+    double off = t.bearing - t.beamBearing;
+    if (off > math.pi) off -= 2 * math.pi;
+    if (off < -math.pi) off += 2 * math.pi;
+    if (off.abs() > 1.5 * math.pi / 180) t.beamBearing = t.bearing;
   }
 
   /// Housekeeping once per display frame.

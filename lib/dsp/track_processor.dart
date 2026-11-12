@@ -122,11 +122,10 @@ class TrackProcessor {
   /// gate samples (bins k0-7 .. k0+7). Returns a measurement every 8 chirps.
   DwellMeasurement? push(int k0, double bearing, Float64List lr, Float64List li,
       Float64List rr, Float64List ri) {
-    if (_mapBearing.isNaN || (bearing - _mapBearing).abs() > 0.07) {
+    if (bearing != _mapBearing) {
+      // New beam position: the clutter seen from here is different.
       resetClutter();
       _mapBearing = bearing;
-    } else {
-      _mapBearing += 0.05 * (bearing - _mapBearing);
     }
     final norm = 1 / (2 * Radar.lobeGain);
     double gRe = 0, gIm = 0;

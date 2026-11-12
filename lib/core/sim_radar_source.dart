@@ -614,7 +614,7 @@ class SimRadarSource extends RadarSource {
     tr.li.fillRange(0, Radar.gate, 0);
     tr.rr.fillRange(0, Radar.gate, 0);
     tr.ri.fillRange(0, Radar.gate, 0);
-    final th = _wrapBearing(track.bearing);
+    final th = _wrapBearing(track.beamBearing);
     final k0 = tr.mToBin(track.range);
     const sq = Radar.squint;
     final lo = k0 - Radar.gate ~/ 2 - HannResponse.span;
