@@ -50,7 +50,7 @@ void main() {
     expect(f.values[90 * f.bins + best], greaterThan(0.7));
   });
 
-  test('detector labels structure and the moving person', () {
+  test('search detector finds structure and motion', () {
     final scene = SceneController();
     final radar = SimRadarSource(scene)
       ..sweepRate = 2
@@ -64,7 +64,7 @@ void main() {
       }
     }
     expect(labels, contains('wall'));
-    expect(labels, contains('person'));
+    expect(labels, contains('motion'));
   });
 
   test('FMCW pipeline recovers range, velocity and angle of one target', () {

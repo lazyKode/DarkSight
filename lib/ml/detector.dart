@@ -12,20 +12,14 @@ class Detection {
   final double score;
 }
 
-class _Track {
-  _Track(this.x, this.y, this.t);
-  double x, y, t;
-}
-
-/// The Tier 1 "AI overlay" backend.
+/// Search-sweep structure detector.
 ///
-/// This is a classical pipeline, not a neural network: per-beam CA-CFAR,
-/// sweep-to-sweep change detection, projection onto a Cartesian grid,
-/// run-length wall extraction, connected components and a size/motion rule
-/// set, plus a short track memory so a person who stops walking keeps the
-/// label. It sits behind the same interface a TensorFlow Lite / Core ML
-/// model would use (PolarFrame in, List<Detection> out); see README for the
-/// plan to swap one in.
+/// Per-beam CA-CFAR, sweep-to-sweep change detection, projection onto a
+/// Cartesian grid, run-length wall extraction and connected components.
+/// Outputs "wall" and "object" (static) boxes, and "motion" blobs that start
+/// tracks; what a moving thing *is* is decided by the track dwell and
+/// TargetClassifier, not here. Also answers how many detected walls lie
+/// between the radar and a point (used to correct RCS for wall loss).
 class RadarDetector {
   static const int g = 96;
   final Uint8List _occ = Uint8List(g * g);
@@ -33,15 +27,17 @@ class RadarDetector {
   final Uint16List _hRun = Uint16List(g * g);
   final Uint16List _vRun = Uint16List(g * g);
   final Int32List _stack = Int32List(g * g);
+  final Uint8List _wall = Uint8List(g * g);
+  double _cell = 0.2, _maxR = 10;
   final Float32List _pre = Float32List(1025);
-  final List<_Track> _tracks = [];
 
   List<Detection> detect(PolarFrame f) {
     final beams = f.beams, bins = f.bins;
     final vals = f.values, prev = f.previous;
     final maxR = f.maxRange;
     final cell = 2 * maxR / g;
-    final now = f.time;
+    _cell = cell;
+    _maxR = maxR;
     _occ.fillRange(0, g * g, 0);
     _cls.fillRange(0, g * g, 0);
 
@@ -122,12 +118,14 @@ class RadarDetector {
       }
     }
     final wallRun = math.max(4, (1.2 / cell).ceil());
+    _wall.fillRange(0, g * g, 0);
     for (int i = 0; i < g * g; i++) {
       final o = _occ[i];
       if (o == 0) continue;
       final h = _hRun[i], v = _vRun[i];
       if (h >= wallRun || v >= wallRun) {
         _cls[i] = h >= v ? 1 : 2; // horizontal / vertical structure
+        _wall[i] = 1;
       } else {
         _cls[i] = (o & 2) != 0 ? 3 : 4; // moving / static blob
       }
@@ -172,7 +170,6 @@ class RadarDetector {
 
     // 4. Rules.
     final out = <Detection>[];
-    _tracks.removeWhere((t) => now - t.t > 45);
     Detection box(List<int> c, String label, double score) => Detection(
         c[1] * cell - maxR,
         c[2] * cell - maxR,
@@ -180,50 +177,39 @@ class RadarDetector {
         (c[4] + 1) * cell - maxR,
         label,
         score);
-    double cx(List<int> c) => (c[1] + c[3] + 1) / 2 * cell - maxR;
-    double cy(List<int> c) => (c[2] + c[4] + 1) / 2 * cell - maxR;
     double extent(List<int> c) =>
         math.max(c[3] - c[1] + 1, c[4] - c[2] + 1) * cell;
 
     for (final c in comps) {
       if ((c[0] == 1 || c[0] == 2) && c[5] >= 3) {
         out.add(box(c, 'wall', 0.9));
-      }
-    }
-    // Moving blobs first, so they can claim and refresh tracks.
-    for (final c in comps) {
-      if (c[0] != 3 || c[5] < 2) continue;
-      final e = extent(c);
-      if (e > 2.0) continue;
-      final x = cx(c), y = cy(c);
-      _Track? near;
-      for (final t in _tracks) {
-        if ((t.x - x) * (t.x - x) + (t.y - y) * (t.y - y) < 1.0) near = t;
-      }
-      if (near != null) {
-        near.x = x;
-        near.y = y;
-        near.t = now;
-      } else {
-        _tracks.add(_Track(x, y, now));
-      }
-      out.add(box(c, 'person', math.min(0.95, 0.5 + c[5] * 0.05)));
-    }
-    for (final c in comps) {
-      // Static fragments hanging off a wall are wall, not objects.
-      if (c[0] != 4 || c[5] < 2 || c[6] == 1) continue;
-      final x = cx(c), y = cy(c);
-      _Track? near;
-      for (final t in _tracks) {
-        if ((t.x - x) * (t.x - x) + (t.y - y) * (t.y - y) < 0.8) near = t;
-      }
-      if (near != null) {
-        if (now - near.t < 1.0) continue; // part of a blob already boxed
-        out.add(box(c, 'person', 0.55)); // was moving here recently
-      } else {
+      } else if (c[0] == 3 && c[5] >= 2 && extent(c) <= 2.0) {
+        out.add(box(c, 'motion', math.min(0.95, 0.5 + c[5] * 0.05)));
+      } else if (c[0] == 4 && c[5] >= 2 && c[6] == 0) {
+        // Static fragments hanging off a wall are wall, not objects.
         out.add(box(c, 'object', 0.6));
       }
     }
     return out;
+  }
+
+  /// Walls detected between the radar and (x, y) (metres, radar-relative),
+  /// ignoring the last 0.4 m in front of the point.
+  int wallsBetween(double x, double y) {
+    final r = math.sqrt(x * x + y * y);
+    if (r < 0.5) return 0;
+    final steps = ((r - 0.4) / (_cell * 0.5)).floor();
+    int count = 0;
+    bool inWall = false;
+    for (int i = 1; i <= steps; i++) {
+      final t = i * _cell * 0.5 / r;
+      final gx = ((x * t + _maxR) / _cell).floor();
+      final gy = ((y * t + _maxR) / _cell).floor();
+      if (gx < 0 || gy < 0 || gx >= g || gy >= g) break;
+      final w = _wall[gy * g + gx] == 1;
+      if (w && !inWall) count++;
+      inWall = w;
+    }
+    return count;
   }
 }

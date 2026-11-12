@@ -2,30 +2,40 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import '../dsp/fft.dart';
+import '../dsp/radar_constants.dart';
+import '../ml/detector.dart';
+import 'bodies.dart';
 import 'radar_source.dart';
 import 'scene.dart';
+import 'tracker.dart';
 
-/// Tier 1: a synthetic rotating-beam FMCW radar.
+/// Tier 1: a simulated 2.4 GHz FMCW radar with an electronically steered
+/// beam that interleaves two jobs, like a real phased-array tracker:
 ///
-/// For every beam position the engine synthesises one chirp of complex
-/// baseband beat signal as a sum of tones (one per scatterer, beat frequency
-/// proportional to range, carrier phase 4*pi*r/lambda, amplitude from a
-/// simplified radar equation, two-way Gaussian beam gain), adds receiver
-/// noise and transmit leakage, then windows and FFTs it into a range
-/// profile. Nothing is drawn directly: the image is whatever the signal
-/// processing recovers.
+///  * SEARCH: the beam sweeps 360 degrees, one 256-sample chirp per degree,
+///    synthesised from every scatterer in the scene, windowed and FFT'd into
+///    a range profile. This is the PPI picture.
+///  * TRACK DWELL: for every track the beam stares at the target at 256
+///    chirps/s with two squinted receive lobes (monopulse), giving a 15-bin
+///    range gate per chirp. The processing turns that into range, angle,
+///    Doppler, a micro-Doppler spectrogram, gait cadence, radar cross-section
+///    and breathing rate, and classifies the target from those.
 ///
-/// Scatterer model
-///  * walls       dense point scatterers, specular-weighted (strong)
-///  * furniture   perimeter scatterers (medium)
-///  * person      torso + four limb scatterers with gait motion (weak)
-///  * multipath   first-order wall images of each person: a full
-///                wall-person-wall path and a weaker mixed path
-///  * every wall crossed on the way to a scatterer costs 6 dB
-///  * clutter     slow per-scatterer amplitude and phase drift
+/// This class plays the hardware: it knows the scene. Everything from the
+/// receiver samples onward (TrackProcessor, Tracker, TargetClassifier,
+/// RadarDetector) sees only signals.
+///
+/// Physics in the model
+///  * point targets (bodies): amplitude G * sqrt(rcs) / r^2 (radar equation)
+///  * walls: specular plate return, amplitude falls as 1/r
+///  * each wall crossed: two-way amplitude x 0.5 (6 dB)
+///  * bodies: torso plus limbs or legs with gait motion, breathing chest,
+///    per-individual size and gait; fans: hub plus three rotating blades
+///  * multipath: first-order wall images of each body
+///  * clutter drift, transmit leakage, thermal noise
 class SimRadarSource extends RadarSource {
   SimRadarSource(this.scene)
-      : frame = PolarFrame(beams: 360, bins: 200, maxRange: 10);
+      : frame = PolarFrame(beams: 360, bins: Radar.bins, maxRange: 10);
 
   final SceneController scene;
 
@@ -35,37 +45,55 @@ class SimRadarSource extends RadarSource {
   @override
   String get label => 'SIM';
 
+  final Tracker tracker = Tracker();
+  final RadarDetector detector = RadarDetector();
+
+  /// Walls and static objects from the search sweep (no movers: those are
+  /// tracks).
+  List<Detection> structure = const [];
+
   // ---- parameters set by the UI ----
   double sweepRate = 0.5; // rev/s
-  double noise = 0.25; // 0..1
+  double _noise = 0.25; // 0..1
   bool playing = true;
   double personSpeed = 0.8; // m/s
   int trajectory = 0;
+
+  double get noise => _noise;
+  set noise(double v) {
+    _noise = v;
+    tracker.noise = v;
+    for (final t in tracker.tracks) {
+      t.processor.noise = v;
+    }
+  }
 
   set maxRange(double r) {
     if ((r - frame.maxRange).abs() > 1e-6) {
       frame.maxRange = r;
       frame.clear();
+      tracker.clear();
+      tracker.maxRange = r;
       _builtStaticRev = -1;
     }
   }
 
   // ---- constants ----
-  static const int _n = 256; // samples per chirp
-  static const double _lambda = 0.125; // 2.4 GHz carrier
+  static const int _n = Radar.samples;
+  static const double _lambda = Radar.lambda;
   static const double _spacing = 0.08; // wall scatterer pitch, m
-  static const double _wallLoss = 0.5; // amplitude factor per wall crossed
   static const double _reflect = 0.6; // wall reflection coefficient
   static const double _circleR = 1.5;
   static const double _lineL = 2.5;
   static const int _halfSpan = 4; // bearing buckets either side of a beam
-  static final double _beamSigma = 1.4 * math.pi / 180; // two-way
-  static final double _invTwoSigma2 = 1 / (2 * _beamSigma * _beamSigma);
+  static const double _beamSigma = Radar.beamSigma;
+  static const double _invTwoSigma2 = 1 / (2 * _beamSigma * _beamSigma);
 
   final Fft _fft = Fft(_n);
   final Float64List _re = Float64List(_n);
   final Float64List _im = Float64List(_n);
   final math.Random _rng = math.Random(7);
+  final Float64List _resp = Float64List(2);
 
   // Effective wall segments (walls minus door gaps): ax, ay, bx, by per seg.
   final List<double> _seg = [];
@@ -79,18 +107,24 @@ class SimRadarSource extends RadarSource {
   final List<List<int>> _buckets = List.generate(360, (_) => <int>[]);
   int _builtStaticRev = -1;
 
-  // Dynamic scatterers (people and their multipath images), rebuilt per tick.
+  // Dynamic scatterers (bodies and their multipath images).
   final List<double> _dBearing = [];
   final List<double> _dBin = [];
   final List<double> _dAmp = [];
   final List<double> _dPhi = [];
 
+  // Scratch lists for body scatterers.
+  final List<double> _bx = [], _by = [], _ba = [];
+
   final Set<int> _pending = <int>{};
   double _acc = 0;
+  double _chirpAcc = 0;
   int _cursor = 0;
   double _time = 0;
+  double _detectClock = 0;
 
   int get staticScattererCount => _sAmp.length;
+  double get time => _time;
 
   /// Ask for the sector around a world point to be re-illuminated on the next
   /// tick, so dragged objects show up without waiting for the sweep.
@@ -102,6 +136,11 @@ class SimRadarSource extends RadarSource {
   /// Re-derive a person's animation anchor from its current position, so the
   /// trajectory continues from wherever the user dropped it.
   void reanchor(SceneObject p) {
+    if (p.kind != ObjKind.person) {
+      p.ax = p.x;
+      p.ay = p.y;
+      return;
+    }
     _trajectoryOffset(p);
     p.ax = p.x - _ox;
     p.ay = p.y - _oy;
@@ -126,38 +165,73 @@ class SimRadarSource extends RadarSource {
     }
   }
 
+  // ---- animation (simulator ground truth) ----
+
   void _animate(double dt) {
     for (final p in scene.objects) {
-      if (p.kind != ObjKind.person) continue;
-      if (p.held || personSpeed <= 0.001) {
+      final body = p.body;
+      if (body == null) continue;
+      if (p.held) {
         p.moving = false;
+        p.speed = 0;
         continue;
       }
-      p.moving = true;
-      switch (trajectory) {
-        case 0:
-          p.phase += personSpeed * dt / _circleR;
-          _trajectoryOffset(p);
-          p.x = p.ax + _ox;
-          p.y = p.ay + _oy;
+      final ox = p.x, oy = p.y;
+      switch (p.kind) {
+        case ObjKind.person:
+          if (personSpeed <= 0.001) {
+            p.speed = 0;
+            break;
+          }
+          switch (trajectory) {
+            case 0:
+              p.phase += personSpeed * dt / _circleR;
+              _trajectoryOffset(p);
+              p.x = p.ax + _ox;
+              p.y = p.ay + _oy;
+              break;
+            case 1:
+              p.phase += personSpeed * dt;
+              _trajectoryOffset(p);
+              p.x = p.ax + _ox;
+              p.y = p.ay + _oy;
+              break;
+            default:
+              _wander(p, personSpeed, 2.5, dt);
+          }
+          p.speed = personSpeed;
           break;
-        case 1:
-          p.phase += personSpeed * dt;
-          _trajectoryOffset(p);
-          p.x = p.ax + _ox;
-          p.y = p.ay + _oy;
+        case ObjKind.dog:
+        case ObjKind.cat:
+          p.behaviourTimer -= dt;
+          if (p.behaviourTimer <= 0) {
+            p.resting = !p.resting;
+            p.behaviourTimer = p.resting
+                ? 6 + _rng.nextDouble() * 14
+                : 5 + _rng.nextDouble() * 10;
+          }
+          final target = p.resting ? 0.0 : body.cruiseSpeed;
+          p.speed += (target - p.speed) * math.min(1, dt * 2);
+          if (p.speed > 0.02) _wander(p, p.speed, 1.8, dt);
           break;
         default:
-          p.heading += (_rng.nextDouble() - 0.5) * 3.0 * dt;
-          final dx = p.ax - p.x, dy = p.ay - p.y;
-          if (dx * dx + dy * dy > 6.25) p.heading = math.atan2(dy, dx);
-          p.x += personSpeed * math.cos(p.heading) * dt;
-          p.y += personSpeed * math.sin(p.heading) * dt;
+          p.speed = 0;
       }
       p.x = p.x.clamp(0.3, SceneController.worldW - 0.3).toDouble();
       p.y = p.y.clamp(0.3, SceneController.worldH - 0.3).toDouble();
-      p.gait += personSpeed * dt * 5.0;
+      final mx = p.x - ox, my = p.y - oy;
+      if (mx * mx + my * my > 1e-10) p.heading = math.atan2(my, mx);
+      p.moving = p.speed > 0.05;
+      p.gait += 2 * math.pi * body.legFreq(p.speed) * dt;
     }
+  }
+
+  void _wander(SceneObject p, double v, double leash, double dt) {
+    p.heading += (_rng.nextDouble() - 0.5) * 3.0 * dt;
+    final dx = p.ax - p.x, dy = p.ay - p.y;
+    if (dx * dx + dy * dy > leash * leash) p.heading = math.atan2(dy, dx);
+    p.x += v * math.cos(p.heading) * dt;
+    p.y += v * math.sin(p.heading) * dt;
   }
 
   // ---- geometry ----
@@ -220,7 +294,8 @@ class SimRadarSource extends RadarSource {
       double s = 0;
       for (final g in gaps) {
         if (g[0] - s > 0.05) {
-          _seg.addAll([w.x + ux * s, w.y + uy * s, w.x + ux * g[0], w.y + uy * g[0]]);
+          _seg.addAll(
+              [w.x + ux * s, w.y + uy * s, w.x + ux * g[0], w.y + uy * g[0]]);
         }
         if (g[1] > s) s = g[1];
       }
@@ -236,7 +311,8 @@ class SimRadarSource extends RadarSource {
       final dx = px - rx, dy = py - ry;
       final r = math.sqrt(dx * dx + dy * dy);
       if (r < 0.25 || r > maxR * 1.2) return;
-      final att = math.pow(_wallLoss, _crossings(px, py, skipSeg)).toDouble();
+      final att =
+          math.pow(Radar.wallLoss, _crossings(px, py, skipSeg)).toDouble();
       bearing.add(_wrapBearing(math.atan2(dy, dx)));
       bin.add(r / maxR * frame.bins);
       amp.add(a * att / math.max(r, 0.5));
@@ -294,15 +370,14 @@ class SimRadarSource extends RadarSource {
     }
   }
 
-  void _addDynamic(double px, double py, double a, {double? pathLen, double? atX, double? atY}) {
-    final rx = scene.radarX, ry = scene.radarY;
-    final bx = (atX ?? px) - rx, by = (atY ?? py) - ry;
-    final dx = px - rx, dy = py - ry;
-    final r = pathLen ?? math.sqrt(dx * dx + dy * dy);
+  /// Adds a point return seen at (atX, atY) with total two-way path [r]
+  /// (one-way equivalent range) and final amplitude [a].
+  void _addDynamic(double atX, double atY, double r, double a) {
     if (r < 0.25 || r > frame.maxRange * 1.2) return;
+    final bx = atX - scene.radarX, by = atY - scene.radarY;
     _dBearing.add(_wrapBearing(math.atan2(by, bx)));
     _dBin.add(r / frame.maxRange * frame.bins);
-    _dAmp.add(a / math.max(r, 0.5));
+    _dAmp.add(a);
     _dPhi.add((4 * math.pi * r / _lambda) % (2 * math.pi));
   }
 
@@ -314,20 +389,25 @@ class SimRadarSource extends RadarSource {
     final rx = scene.radarX, ry = scene.radarY;
     final nSeg = _seg.length ~/ 4;
     for (final p in scene.objects) {
-      if (p.kind != ObjKind.person) continue;
-      final att = math.pow(_wallLoss, _crossings(p.x, p.y, -1)).toDouble();
-      // Torso.
-      _addDynamic(p.x, p.y, 0.9 * att);
-      // Limbs: swing along the heading while walking, small sway otherwise.
-      final swing = p.moving ? 0.22 : 0.02;
-      final s = math.sin(p.gait) * swing;
-      final breathe = 0.004 * math.sin(_time * 1.6);
-      _addDynamic(p.x + 0.18 + s, p.y + 0.10, 0.34 * att);
-      _addDynamic(p.x - 0.18 - s, p.y - 0.10, 0.34 * att);
-      _addDynamic(p.x + 0.10 - s, p.y - 0.20 + breathe, 0.28 * att);
-      _addDynamic(p.x - 0.10 + s, p.y + 0.20 - breathe, 0.28 * att);
+      final body = p.body;
+      if (body == null) continue;
+      final att =
+          math.pow(Radar.wallLoss, _crossings(p.x, p.y, -1)).toDouble();
+      final breath = breathingOffset(body, _time);
+      _bx.clear();
+      _by.clear();
+      _ba.clear();
+      emitScatterers(body, _time, p.x, p.y, p.heading, p.speed, p.gait,
+          Radar.gain, _bx, _by, _ba);
+      for (int i = 0; i < _bx.length; i++) {
+        final dx = _bx[i] - rx, dy = _by[i] - ry;
+        final r = math.sqrt(dx * dx + dy * dy) + breath;
+        final rr = math.max(r, 0.5);
+        _addDynamic(_bx[i], _by[i], r, _ba[i] * att / (rr * rr));
+      }
 
-      // Multipath: mirror the person in each wall segment.
+      // Multipath: mirror the body's main return in each wall segment.
+      final a0 = _ba.isEmpty ? 0.0 : _ba[0];
       final ddx = p.x - rx, ddy = p.y - ry;
       final d = math.sqrt(ddx * ddx + ddy * ddy);
       for (int j = 0; j < nSeg; j++) {
@@ -345,17 +425,19 @@ class SimRadarSource extends RadarSource {
         final tq = (qx - ax) * ux + (qy - ay) * uy;
         if (tq < 0 || tq > len) continue; // reflection point misses the wall
         final l = math.sqrt((mx - rx) * (mx - rx) + (my - ry) * (my - ry));
-        // Radar -> wall -> person -> wall -> radar: seen at the image position.
-        _addDynamic(mx, my, 0.9 * att * _reflect * _reflect, pathLen: l);
-        // Radar -> person -> wall -> radar: half-way range, person bearing,
-        // heavily suppressed by the narrow beam.
-        _addDynamic(p.x, p.y, 0.9 * att * _reflect * 0.25,
-            pathLen: (d + l) / 2);
+        final ll = math.max(l, 0.5);
+        // Radar -> wall -> body -> wall -> radar: seen at the image.
+        _addDynamic(mx, my, l + breath,
+            a0 * att * _reflect * _reflect / (ll * ll));
+        // Radar -> body -> wall -> radar: half-way range, body bearing.
+        final h = (d + l) / 2;
+        _addDynamic(p.x, p.y, h + breath,
+            a0 * att * _reflect * 0.25 / math.max(h * h, 0.25));
       }
     }
   }
 
-  // ---- signal synthesis ----
+  // ---- search: one chirp per beam ----
 
   void _tone(double bin, double phase, double a) {
     final w = 2 * math.pi * bin / _n;
@@ -369,6 +451,11 @@ class SimRadarSource extends RadarSource {
       pq = pr * wi + pq * wr;
       pr = t;
     }
+  }
+
+  double _gauss() {
+    final u1 = _rng.nextDouble() + 1e-12, u2 = _rng.nextDouble();
+    return math.sqrt(-2 * math.log(u1)) * math.cos(2 * math.pi * u2);
   }
 
   void _synthBeam(int b) {
@@ -387,7 +474,6 @@ class SimRadarSource extends RadarSource {
         if (d > math.pi) d -= 2 * math.pi;
         if (d < -math.pi) d += 2 * math.pi;
         final h = _sHash[i];
-        // Slow clutter drift in amplitude and phase.
         final a = _sAmp[i] *
             math.exp(-d * d * _invTwoSigma2) *
             (1 + 0.08 * math.sin(0.5 * t + h));
@@ -405,8 +491,7 @@ class SimRadarSource extends RadarSource {
     // Transmit leakage ("main bang") with slow drift.
     _tone(0.6, 0.4 * math.sin(0.11 * t), 0.5 * (1 + 0.2 * math.sin(0.07 * t)));
 
-    // Thermal noise (complex Gaussian, Box-Muller) and window.
-    final double sigma = 0.01 * math.pow(10, 2 * noise).toDouble();
+    final double sigma = Radar.noiseSigma(_noise);
     final hann = _fft.hann;
     for (int n = 0; n < _n; n++) {
       final u1 = _rng.nextDouble() + 1e-12, u2 = _rng.nextDouble();
@@ -431,14 +516,127 @@ class SimRadarSource extends RadarSource {
     frame.beamTime[b] = t;
   }
 
+  // ---- track dwell: one chirp, two lobes, one range gate ----
+
+  void _accGate(double bin, int k0, double a, double phase, double gL,
+      double gR) {
+    final tr = tracker;
+    final c = a * math.cos(phase), s = a * math.sin(phase);
+    const half = Radar.gate ~/ 2;
+    for (int j = 0; j < Radar.gate; j++) {
+      if (!HannResponse.at(bin - (k0 - half + j), _resp)) continue;
+      final vr = c * _resp[0] - s * _resp[1];
+      final vi = c * _resp[1] + s * _resp[0];
+      tr.lr[j] += gL * vr;
+      tr.li[j] += gL * vi;
+      tr.rr[j] += gR * vr;
+      tr.ri[j] += gR * vi;
+    }
+  }
+
+  void _dwellChirp(Track track) {
+    final tr = tracker;
+    tr.lr.fillRange(0, Radar.gate, 0);
+    tr.li.fillRange(0, Radar.gate, 0);
+    tr.rr.fillRange(0, Radar.gate, 0);
+    tr.ri.fillRange(0, Radar.gate, 0);
+    final th = _wrapBearing(track.bearing);
+    final k0 = tr.mToBin(track.range);
+    const sq = Radar.squint;
+    final lo = k0 - Radar.gate ~/ 2 - HannResponse.span;
+    final hi = k0 + Radar.gate ~/ 2 + HannResponse.span;
+    final t = _time;
+    final limit = 4 * _beamSigma;
+
+    void add(double d, double bin, double a, double phase) {
+      if (bin < lo || bin > hi || d.abs() > limit + sq) return;
+      final gL = math.exp(-(d + sq) * (d + sq) * _invTwoSigma2);
+      final gR = math.exp(-(d - sq) * (d - sq) * _invTwoSigma2);
+      _accGate(bin, k0, a, phase, gL, gR);
+    }
+
+    final deg = (th * 180 / math.pi).floor();
+    for (int o = -6; o <= 6; o++) {
+      final bucket = _buckets[((deg + o) % 360 + 360) % 360];
+      for (int q = 0; q < bucket.length; q++) {
+        final i = bucket[q];
+        final b = _sBin[i];
+        if (b < lo || b > hi) continue;
+        double d = _sBearing[i] - th;
+        if (d > math.pi) d -= 2 * math.pi;
+        if (d < -math.pi) d += 2 * math.pi;
+        final h = _sHash[i];
+        add(d, b, _sAmp[i] * (1 + 0.08 * math.sin(0.5 * t + h)),
+            _sPhi[i] + 0.15 * math.sin(0.23 * t + 1.7 * h));
+      }
+    }
+    for (int i = 0; i < _dAmp.length; i++) {
+      double d = _dBearing[i] - th;
+      if (d > math.pi) d -= 2 * math.pi;
+      if (d < -math.pi) d += 2 * math.pi;
+      add(d, _dBin[i], _dAmp[i], _dPhi[i]);
+    }
+    final sn = Radar.noisePerBin(_noise);
+    for (int j = 0; j < Radar.gate; j++) {
+      tr.lr[j] += sn * _gauss();
+      tr.li[j] += sn * _gauss();
+      tr.rr[j] += sn * _gauss();
+      tr.ri[j] += sn * _gauss();
+    }
+    tr.onChirp(track, k0);
+  }
+
+  // ---- search-sweep detection feeding the tracker ----
+
+  void _runDetector() {
+    final dets = detector.detect(frame);
+    final out = <Detection>[];
+    for (final d in dets) {
+      if (d.label == 'motion') {
+        tracker.onSearchDetection(
+            (d.minX + d.maxX) / 2, (d.minY + d.maxY) / 2);
+        continue;
+      }
+      if (d.label == 'object') {
+        // A static blob on top of a track is the tracked target itself.
+        final cx = (d.minX + d.maxX) / 2, cy = (d.minY + d.maxY) / 2;
+        bool nearTrack = false;
+        for (final t in tracker.tracks) {
+          final dx = t.x - cx, dy = t.y - cy;
+          if (dx * dx + dy * dy < 0.8) nearTrack = true;
+        }
+        if (nearTrack) continue;
+      }
+      out.add(d);
+    }
+    structure = out;
+  }
+
   @override
   void tick(double dt) {
     if (dt > 0.1) dt = 0.1;
-    _time += dt;
-    if (playing) _animate(dt);
+    tracker.maxRange = frame.maxRange;
+    tracker.wallsTo ??= detector.wallsBetween;
     if (_builtStaticRev != scene.staticRevision) _rebuildStatic();
-    _rebuildDynamic();
 
+    // Chirp-rate loop: animation and track dwells at 256 Hz.
+    const step = 1 / Radar.prf;
+    _chirpAcc += dt;
+    while (_chirpAcc >= step) {
+      _chirpAcc -= step;
+      _time += step;
+      if (playing) _animate(step);
+      if (tracker.tracks.isNotEmpty) {
+        _rebuildDynamic();
+        for (final t in tracker.tracks) {
+          _dwellChirp(t);
+        }
+      }
+    }
+    tracker.frame(dt);
+
+    // Search sweep at frame end.
+    _rebuildDynamic();
     if (_pending.isNotEmpty) {
       final done = <int>{};
       for (final c in _pending) {
@@ -449,7 +647,6 @@ class SimRadarSource extends RadarSource {
       }
       _pending.clear();
     }
-
     _acc += sweepRate * frame.beams * dt;
     int n = _acc.floor();
     _acc -= n;
@@ -460,5 +657,11 @@ class SimRadarSource extends RadarSource {
     }
     frame.sweepAngle = _cursor * 2 * math.pi / frame.beams;
     frame.time = _time;
+
+    _detectClock += dt;
+    if (_detectClock >= 0.2) {
+      _detectClock = 0;
+      _runDetector();
+    }
   }
 }

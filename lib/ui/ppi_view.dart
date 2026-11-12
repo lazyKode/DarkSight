@@ -7,7 +7,9 @@ import 'package:flutter/material.dart';
 
 import '../core/radar_source.dart';
 import '../core/scene.dart';
+import '../core/tracker.dart';
 import '../ml/detector.dart';
+import '../ml/target_classifier.dart';
 import 'theme.dart';
 
 /// Converts a [PolarFrame] to a Cartesian RGBA image through a precomputed
@@ -97,11 +99,26 @@ class PpiModel {
   ui.Image? image;
   PolarFrame? frame;
   SceneController? scene;
-  List<Detection> detections = const [];
+  List<Detection> structure = const [];
+  List<Track> tracks = const [];
+  int? selectedTrack;
   bool showAi = false;
   bool showGhost = true;
+  double clock = 0;
   String hud = '';
+
+  /// Geometry of the last paint, for hit-testing taps.
+  Offset centre = Offset.zero;
+  double scale = 1;
 }
+
+Color classColor(TargetClass? c) => switch (c) {
+      TargetClass.human => kAlert,
+      TargetClass.dog => kAmber,
+      TargetClass.cat => const Color(0xFFE6A8FF),
+      TargetClass.machine => const Color(0xFF4FC3F7),
+      null => kPhosphor,
+    };
 
 class PpiPainter extends CustomPainter {
   PpiPainter(this.model) : super(repaint: model.repaint);
@@ -111,7 +128,7 @@ class PpiPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final d = math.min(size.width, size.height);
     final c = Offset(size.width / 2, size.height / 2);
-    final rad = d / 2 - 6;
+    final rad = d / 2 - 8;
     final circle = Rect.fromCircle(center: c, radius: rad);
     final f = model.frame;
 
@@ -127,19 +144,23 @@ class PpiPainter extends CustomPainter {
     }
     if (f == null) return;
     final scale = rad / f.maxRange;
+    model.centre = c;
+    model.scale = scale;
+    Offset r2p(double x, double y) => Offset(c.dx + x * scale, c.dy + y * scale);
 
     canvas.save();
     canvas.clipPath(Path()..addOval(circle));
 
-    // Ghosted floor plan at 20 % opacity, radar-centred.
+    // Ghosted floor plan at 20 % opacity: the static plan only. Bodies are
+    // never drawn from the scene: anything shown moving comes from tracks.
     final scene = model.scene;
     if (scene != null && model.showGhost) {
       final ghost = Paint()
         ..color = const Color(0x33FFFFFF)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.5;
-      Offset w2p(double x, double y) => Offset(
-          c.dx + (x - scene.radarX) * scale, c.dy + (y - scene.radarY) * scale);
+      Offset w2p(double x, double y) =>
+          r2p(x - scene.radarX, y - scene.radarY);
       for (final o in scene.objects) {
         switch (o.kind) {
           case ObjKind.wall:
@@ -158,8 +179,7 @@ class PpiPainter extends CustomPainter {
                     height: o.h * scale),
                 ghost);
             break;
-          case ObjKind.person:
-            canvas.drawCircle(w2p(o.x, o.y), 0.28 * scale, ghost);
+          default:
             break;
         }
       }
@@ -184,9 +204,31 @@ class PpiPainter extends CustomPainter {
         ..color = kPhosphor.withOpacity(0.8)
         ..strokeWidth = 1.2,
     );
+
+    if (model.showAi) {
+      for (final det in model.structure) {
+        final wall = det.label == 'wall';
+        final color = wall ? const Color(0xFF4FC3F7) : kAmber;
+        final r = Rect.fromPoints(r2p(det.minX, det.minY), r2p(det.maxX, det.maxY))
+            .inflate(2);
+        canvas.drawRect(
+            r,
+            Paint()
+              ..color = color.withOpacity(wall ? 0.45 : 0.8)
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = wall ? 0.8 : 1.2);
+        if (!wall) {
+          paintLabel(canvas, 'STATIC OBJECT', Offset(r.left, r.top - 12),
+              color, size: 8, background: true);
+        }
+      }
+      for (final t in model.tracks) {
+        _paintTrack(canvas, t, r2p, scale);
+      }
+    }
     canvas.restore();
 
-    // Range rings and bezel.
+    // Range rings, bearing ticks and bezel.
     final ring = Paint()
       ..color = kPhosphor.withOpacity(0.18)
       ..style = PaintingStyle.stroke
@@ -202,6 +244,20 @@ class PpiPainter extends CustomPainter {
     }
     canvas.drawLine(c - Offset(rad, 0), c + Offset(rad, 0), ring);
     canvas.drawLine(c - Offset(0, rad), c + Offset(0, rad), ring);
+    final tick = Paint()
+      ..color = kPhosphor.withOpacity(0.5)
+      ..strokeWidth = 1;
+    for (int deg = 0; deg < 360; deg += 10) {
+      final a = (deg - 90) * math.pi / 180; // 000 at the top
+      final len = deg % 30 == 0 ? 8.0 : 4.0;
+      final u = Offset(math.cos(a), math.sin(a));
+      canvas.drawLine(c + u * rad, c + u * (rad - len), tick);
+      if (deg % 30 == 0) {
+        paintLabel(canvas, deg.toString().padLeft(3, '0'),
+            c + u * (rad - 20) - const Offset(9, 5), kPhosphor.withOpacity(0.45),
+            size: 8);
+      }
+    }
     canvas.drawCircle(
         c,
         rad,
@@ -210,44 +266,107 @@ class PpiPainter extends CustomPainter {
           ..style = PaintingStyle.stroke
           ..strokeWidth = 1.5);
 
-    // Detector overlay.
-    if (model.showAi) {
-      for (final det in model.detections) {
-        final color = det.label == 'person'
-            ? kAlert
-            : det.label == 'wall'
-                ? const Color(0xFF4FC3F7)
-                : kAmber;
-        final r = Rect.fromLTRB(
-          c.dx + det.minX * scale - 2,
-          c.dy + det.minY * scale - 2,
-          c.dx + det.maxX * scale + 2,
-          c.dy + det.maxY * scale + 2,
-        );
-        canvas.drawRect(
-            r,
-            Paint()
-              ..color = color
-              ..style = PaintingStyle.stroke
-              ..strokeWidth = det.label == 'wall' ? 1.0 : 1.8);
-        if (det.label != 'wall' || r.longestSide > 60) {
-          paintLabel(
-              canvas,
-              '${det.label} ${(det.score * 100).round()}%',
-              Offset(r.left, r.top - 13),
-              color,
-              size: 9,
-              background: true);
-        }
+    if (model.hud.isNotEmpty) {
+      paintLabel(canvas, model.hud, Offset(6, 4), kDim, size: 10);
+    }
+  }
+
+  void _paintTrack(Canvas canvas, Track t,
+      Offset Function(double, double) r2p, double scale) {
+    final cls = t.classifier.best;
+    final color = classColor(cls);
+    final p = r2p(t.x, t.y);
+    final tentative = t.status == TrackStatus.tentative;
+    final coasting = t.status == TrackStatus.coasting;
+    final alpha = coasting ? 0.45 : 1.0;
+    final selected = model.selectedTrack == t.id;
+
+    // Trail.
+    final tr = t.trail;
+    for (int i = 2; i + 1 < tr.length; i += 2) {
+      final a = (i / tr.length);
+      canvas.drawLine(
+          r2p(tr[i - 2], tr[i - 1]),
+          r2p(tr[i], tr[i + 1]),
+          Paint()
+            ..color = color.withOpacity(0.5 * a * alpha)
+            ..strokeWidth = 1.4);
+    }
+
+    // Corner brackets.
+    final h = math.max(9.0, 0.45 * scale);
+    final pen = Paint()
+      ..color = color.withOpacity(alpha)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = selected ? 2 : 1.4;
+    final l = h * 0.55;
+    for (final s in const [
+      [-1.0, -1.0],
+      [1.0, -1.0],
+      [-1.0, 1.0],
+      [1.0, 1.0]
+    ]) {
+      final o = p + Offset(s[0] * h, s[1] * h);
+      if (tentative) {
+        canvas.drawCircle(o, 1.2, Paint()..color = color.withOpacity(0.7));
+        continue;
+      }
+      canvas.drawLine(o, o - Offset(s[0] * l, 0), pen);
+      canvas.drawLine(o, o - Offset(0, s[1] * l), pen);
+    }
+    canvas.drawCircle(p, 2, Paint()..color = color.withOpacity(alpha));
+
+    // Velocity vector (1 s ahead).
+    if (t.speed > 0.2) {
+      canvas.drawLine(p, r2p(t.x + t.vx, t.y + t.vy),
+          Paint()
+            ..color = color.withOpacity(0.8 * alpha)
+            ..strokeWidth = 1.2);
+    }
+
+    // Lock reticle on the selected track.
+    if (selected) {
+      final spin = model.clock * 1.5;
+      final rr = h * 1.9;
+      final arc = Paint()
+        ..color = color.withOpacity(0.9)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.2;
+      for (int k = 0; k < 4; k++) {
+        canvas.drawArc(Rect.fromCircle(center: p, radius: rr),
+            spin + k * math.pi / 2, math.pi / 4, false, arc);
       }
     }
 
-    if (model.hud.isNotEmpty) {
-      paintLabel(canvas, model.hud, Offset(c.dx - rad, c.dy - rad - 2), kDim,
-          size: 10);
+    final name = 'T-${t.id.toString().padLeft(2, '0')}';
+    String tag;
+    if (tentative) {
+      tag = '$name  ACQUIRING';
+    } else if (cls == null) {
+      tag = '$name  ANALYSING';
+    } else {
+      tag = '$name  ${cls.label} ${(t.classifier.confidence * 100).round()}%';
     }
+    if (coasting) tag = '$tag  (LOST)';
+    paintLabel(canvas, tag, p + Offset(h + 4, -h - 4), color.withOpacity(alpha),
+        size: 9, background: true);
   }
 
   @override
   bool shouldRepaint(covariant PpiPainter oldDelegate) => false;
+}
+
+/// Faint horizontal scan lines over a display, for the CRT feel.
+class ScanlinePainter extends CustomPainter {
+  const ScanlinePainter();
+  @override
+  void paint(Canvas canvas, Size size) {
+    final p = Paint()..color = const Color(0x0DFFFFFF);
+    for (double y = 0; y < size.height; y += 3) {
+      canvas.drawRect(Rect.fromLTWH(0, y, size.width, 1), p);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant ScanlinePainter oldDelegate) => false;
 }

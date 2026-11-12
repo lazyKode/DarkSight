@@ -3,14 +3,45 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-enum ObjKind { wall, door, furniture, person }
+import 'bodies.dart';
+
+enum ObjKind { wall, door, furniture, person, dog, cat, fan }
+
+extension ObjKindX on ObjKind {
+  /// True for things the radar sees as bodies (animated scatterers).
+  bool get isBody =>
+      this == ObjKind.person ||
+      this == ObjKind.dog ||
+      this == ObjKind.cat ||
+      this == ObjKind.fan;
+
+  BodyKind? get bodyKind => switch (this) {
+        ObjKind.person => BodyKind.human,
+        ObjKind.dog => BodyKind.dog,
+        ObjKind.cat => BodyKind.cat,
+        ObjKind.fan => BodyKind.fan,
+        _ => null,
+      };
+
+  String get label => switch (this) {
+        ObjKind.wall => 'Wall',
+        ObjKind.door => 'Door gap',
+        ObjKind.furniture => 'Furniture',
+        ObjKind.person => 'Person',
+        ObjKind.dog => 'Dog',
+        ObjKind.cat => 'Cat',
+        ObjKind.fan => 'Fan',
+      };
+}
 
 /// One object on the floor plan. Units are metres, x right, y down.
 ///
 /// wall:      (x, y) -> (x2, y2)
 /// door:      centre (x, y), opening width w. Cuts a gap in any wall it sits on.
 /// furniture: centre (x, y), size w x h
-/// person:    current position (x, y); (ax, ay) is the animation anchor
+/// person / dog / cat: current position (x, y); (ax, ay) is the
+///            animation anchor
+/// fan:       centre (x, y)
 class SceneObject {
   SceneObject({
     required this.id,
@@ -22,17 +53,25 @@ class SceneObject {
     this.w = 1,
     this.h = 1,
   })  : ax = x,
-        ay = y;
+        ay = y {
+    final bk = kind.bodyKind;
+    if (bk != null) body = BodyParams(bk, id * 7919 + kind.index * 131);
+  }
 
   final int id;
   final ObjKind kind;
   double x, y, x2, y2, w, h;
 
-  // Person animation state.
+  // Body animation state (person, dog, cat, fan). This is simulator
+  // ground truth: the radar processing never reads it.
+  BodyParams? body;
   double ax, ay;
   double phase = 0;
   double heading = 0;
   double gait = 0;
+  double speed = 0; // current ground speed, m/s
+  double behaviourTimer = 0; // animals: seconds left in walk / rest bout
+  bool resting = false;
   bool held = false;
   bool moving = false;
 
@@ -95,8 +134,12 @@ class SceneController extends ChangeNotifier {
     // Furniture.
     _add(ObjKind.furniture, 3.2, 3.4, w: 1.6, h: 0.9);
     _add(ObjKind.furniture, 10.6, 11.4, w: 2.0, h: 0.8);
-    // A person in the next room, seen through the partition.
+    // A person in the next room, seen through the partition, a dog in the
+    // room below it, a cat at the back, and a desk fan running.
     _add(ObjKind.person, 10.3, 5.2);
+    _add(ObjKind.dog, 10.2, 9.6);
+    _add(ObjKind.cat, 4.6, 3.2);
+    _add(ObjKind.fan, 6.9, 7.2);
     touch();
   }
 
@@ -114,11 +157,14 @@ class SceneController extends ChangeNotifier {
         o = _add(kind, cx, cy, w: 1.2, h: 0.8);
         break;
       case ObjKind.person:
+      case ObjKind.dog:
+      case ObjKind.cat:
+      case ObjKind.fan:
         o = _add(kind, cx, cy);
         break;
     }
     selectedId = o.id;
-    touch(staticChanged: kind != ObjKind.person);
+    touch(staticChanged: !kind.isBody);
     return o;
   }
 
@@ -165,7 +211,9 @@ class SceneController extends ChangeNotifier {
       radarX = r[0].toDouble();
       radarY = r[1].toDouble();
       for (final j in list) {
-        final k = ObjKind.values[(j['kind'] as num).toInt()];
+        final ki = (j['kind'] as num).toInt();
+        if (ki < 0 || ki >= ObjKind.values.length) continue;
+        final k = ObjKind.values[ki];
         _add(k, (j['x'] as num).toDouble(), (j['y'] as num).toDouble(),
             x2: (j['x2'] as num).toDouble(),
             y2: (j['y2'] as num).toDouble(),

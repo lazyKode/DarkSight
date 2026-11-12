@@ -30,6 +30,16 @@ class FloorPlanEditor extends StatefulWidget {
 
 enum _Grab { none, body, wallA, wallB, radar, resize }
 
+IconData _kindIcon(ObjKind k) => switch (k) {
+      ObjKind.wall => Icons.horizontal_rule,
+      ObjKind.door => Icons.sensor_door_outlined,
+      ObjKind.furniture => Icons.chair_outlined,
+      ObjKind.person => Icons.person_outline,
+      ObjKind.dog => Icons.pets,
+      ObjKind.cat => Icons.cruelty_free_outlined,
+      ObjKind.fan => Icons.toys_outlined,
+    };
+
 class _FloorPlanEditorState extends State<FloorPlanEditor> {
   _Grab _grab = _Grab.none;
   SceneObject? _obj;
@@ -88,6 +98,9 @@ class _FloorPlanEditorState extends State<FloorPlanEditor> {
     // Small things first, walls last.
     for (final kind in [
       ObjKind.person,
+      ObjKind.dog,
+      ObjKind.cat,
+      ObjKind.fan,
       ObjKind.door,
       ObjKind.furniture,
       ObjKind.wall
@@ -97,6 +110,9 @@ class _FloorPlanEditorState extends State<FloorPlanEditor> {
         bool hit = false;
         switch (kind) {
           case ObjKind.person:
+          case ObjKind.dog:
+          case ObjKind.cat:
+          case ObjKind.fan:
             hit = (w - Offset(o.x, o.y)).distance < touch;
             break;
           case ObjKind.door:
@@ -124,7 +140,7 @@ class _FloorPlanEditorState extends State<FloorPlanEditor> {
     _hitTest(_toWorld(d.localPosition));
     final o = _obj;
     if (o != null) {
-      if (o.kind == ObjKind.person) o.held = true;
+      if (o.kind.isBody) o.held = true;
       scene.select(o.id);
     }
   }
@@ -168,7 +184,7 @@ class _FloorPlanEditorState extends State<FloorPlanEditor> {
           o.x2 += o.x - ox;
           o.y2 += o.y - oy;
         }
-        if (o.kind == ObjKind.person) {
+        if (o.kind.isBody) {
           widget.onPersonMoved?.call(o, ox, oy);
           scene.touch(staticChanged: false);
         } else {
@@ -180,7 +196,7 @@ class _FloorPlanEditorState extends State<FloorPlanEditor> {
 
   void _onPanEnd(DragEndDetails d) {
     final o = _obj;
-    if (o != null && o.kind == ObjKind.person) {
+    if (o != null && o.kind.isBody) {
       o.held = false;
       widget.onPersonReleased?.call(o);
     }
@@ -269,14 +285,23 @@ class _FloorPlanEditorState extends State<FloorPlanEditor> {
               const Text('FLOOR PLAN',
                   style: TextStyle(color: kDim, fontSize: 11)),
               const Spacer(),
-              _tool(Icons.horizontal_rule, 'Add wall',
-                  () => scene.addObject(ObjKind.wall)),
-              _tool(Icons.sensor_door_outlined, 'Add door gap',
-                  () => scene.addObject(ObjKind.door)),
-              _tool(Icons.chair_outlined, 'Add furniture',
-                  () => scene.addObject(ObjKind.furniture)),
-              _tool(Icons.person_add_alt, 'Add person',
-                  () => scene.addObject(ObjKind.person)),
+              PopupMenuButton<ObjKind>(
+                tooltip: 'Add to the floor plan',
+                color: kSurface,
+                icon: const Icon(Icons.add_box_outlined, color: kPhosphor, size: 20),
+                onSelected: scene.addObject,
+                itemBuilder: (_) => [
+                  for (final k in ObjKind.values)
+                    PopupMenuItem(
+                      value: k,
+                      child: Row(children: [
+                        Icon(_kindIcon(k), size: 18, color: kPhosphor),
+                        const SizedBox(width: 10),
+                        Text(k.label, style: const TextStyle(fontSize: 13)),
+                      ]),
+                    ),
+                ],
+              ),
               _tool(Icons.delete_outline, 'Delete selected',
                   scene.removeSelected),
               _tool(Icons.save_outlined, 'Save scene', _save),
@@ -379,10 +404,52 @@ class _PlanPainter extends CustomPainter {
           final c = p(o.x, o.y);
           final col = sel ? kAmber : kAlert;
           // Top-down humanoid: shoulders and head.
+          canvas.save();
+          canvas.translate(c.dx, c.dy);
+          canvas.rotate(o.heading + math.pi / 2);
           canvas.drawOval(
-              Rect.fromCenter(center: c, width: 0.62 * s, height: 0.3 * s),
+              Rect.fromCenter(
+                  center: Offset.zero, width: 0.62 * s, height: 0.3 * s),
               Paint()..color = col.withOpacity(0.55));
-          canvas.drawCircle(c, 0.13 * s, Paint()..color = col);
+          canvas.drawCircle(Offset.zero, 0.13 * s, Paint()..color = col);
+          canvas.restore();
+          break;
+        case ObjKind.dog:
+        case ObjKind.cat:
+          final c = p(o.x, o.y);
+          final big = o.kind == ObjKind.dog;
+          final col = sel ? kAmber : const Color(0xFFE6A8FF);
+          final len = (big ? 0.7 : 0.4) * s, wid = (big ? 0.26 : 0.16) * s;
+          canvas.save();
+          canvas.translate(c.dx, c.dy);
+          canvas.rotate(o.heading);
+          canvas.drawOval(
+              Rect.fromCenter(center: Offset.zero, width: len, height: wid),
+              Paint()..color = col.withOpacity(0.55));
+          canvas.drawCircle(Offset(len * 0.55, 0), wid * 0.45,
+              Paint()..color = col);
+          canvas.restore();
+          if (o.resting) {
+            paintLabel(canvas, 'z', c + Offset(len * 0.4, -wid), col, size: 9);
+          }
+          break;
+        case ObjKind.fan:
+          final c = p(o.x, o.y);
+          final col = sel ? kAmber : const Color(0xFF4FC3F7);
+          canvas.drawCircle(
+              c,
+              0.22 * s,
+              Paint()
+                ..color = col
+                ..style = PaintingStyle.stroke
+                ..strokeWidth = 1.2);
+          for (int k = 0; k < 3; k++) {
+            final a = k * 2 * math.pi / 3;
+            canvas.drawLine(c, c + Offset(math.cos(a), math.sin(a)) * 0.2 * s,
+                Paint()
+                  ..color = col
+                  ..strokeWidth = 2);
+          }
           break;
       }
     }

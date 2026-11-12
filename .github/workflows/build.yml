@@ -6,7 +6,7 @@ name: Build
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
   workflow_dispatch:
 
 permissions:
@@ -34,6 +34,8 @@ jobs:
 
   android:
     name: Android APK
+    needs: analyze
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -55,6 +57,8 @@ jobs:
 
   ios:
     name: iOS IPA (unsigned)
+    needs: analyze
+    if: github.ref == 'refs/heads/main'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -76,6 +80,8 @@ jobs:
 
   web:
     name: Web build and Pages deploy
+    needs: analyze
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
