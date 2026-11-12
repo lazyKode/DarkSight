@@ -1,6 +1,10 @@
 # DarkSight
 
 Radio-wave sensing rendered as a human-readable "night vision" view.
+
+**Live web app:** https://lazykode.github.io/DarkSight/
+
+**Downloads (APK / IPA):** open the [Actions tab](https://github.com/lazyKode/DarkSight/actions/workflows/build.yml), pick the latest successful **Build** run, and grab `DarkSight-apk` or `DarkSight-ipa` under Artifacts.
 Flutter (Dart 3), dark-only, three tiers behind one mode switch (SIM / CSI / SDR).
 
 | Tier | What it does | State |
