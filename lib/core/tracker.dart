@@ -53,6 +53,7 @@ class Tracker {
 
   final List<Track> tracks = [];
   int _nextId = 1;
+  int get created => _nextId - 1;
   double noise = 0.25;
 
   /// Range window in metres (maps range bins to metres).

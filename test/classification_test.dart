@@ -11,7 +11,9 @@ import 'package:flutter_test/flutter_test.dart';
 /// track nearest the body at the end, plus the body.
 ({Track? track, SceneObject body, SimRadarSource radar}) runScenario(
     ObjKind kind, double x, double y,
-    {double seconds = 40, double stopAfter = double.infinity, int trajectory = 2}) {
+    {double seconds = 40,
+    double stopAfter = double.infinity,
+    int trajectory = 2}) {
   final scene = SceneController();
   scene.objects.removeWhere((o) => o.kind.isBody);
   final body = scene.addObject(kind);
@@ -45,6 +47,14 @@ import 'package:flutter_test/flutter_test.dart';
       best = t;
     }
   }
+  // ignore: avoid_print
+  print('  ${kind.name} truth (${(body.x - scene.radarX).toStringAsFixed(1)}, '
+      '${(body.y - scene.radarY).toStringAsFixed(1)}) tracks created '
+      '${radar.tracker.created}: ' +
+      radar.tracker.tracks
+          .map((t) => 'T${t.id}(${t.x.toStringAsFixed(1)},${t.y.toStringAsFixed(1)} '
+              '${t.status.name} ex=${t.excess.toStringAsFixed(1)})')
+          .join(' '));
   return (track: bd < 1.2 ? best : null, body: body, radar: radar);
 }
 
@@ -75,15 +85,17 @@ void main() {
     }
   });
 
+  // Radar at (5, 9.5). Walls: x = 8 (door at y 9.5), y = 6 for x < 8
+  // (door at x 4), outer box 1.5..12.5.
   final cases = <(ObjKind, TargetClass, double, double)>[
     (ObjKind.person, TargetClass.human, 10.3, 5.2), // next room, 1 wall
-    (ObjKind.person, TargetClass.human, 4.0, 9.0), // same room
-    (ObjKind.dog, TargetClass.dog, 10.2, 9.6),
-    (ObjKind.dog, TargetClass.dog, 3.5, 8.5),
-    (ObjKind.cat, TargetClass.cat, 4.6, 3.2),
-    (ObjKind.cat, TargetClass.cat, 6.0, 10.5),
-    (ObjKind.fan, TargetClass.machine, 6.9, 7.2),
-    (ObjKind.fan, TargetClass.machine, 10.5, 3.5),
+    (ObjKind.person, TargetClass.human, 3.2, 7.0), // same room
+    (ObjKind.dog, TargetClass.dog, 10.2, 9.6), // through the door
+    (ObjKind.dog, TargetClass.dog, 3.2, 3.8), // behind a wall
+    (ObjKind.cat, TargetClass.cat, 6.6, 7.6), // same room
+    (ObjKind.cat, TargetClass.cat, 3.2, 4.6), // behind a wall
+    (ObjKind.fan, TargetClass.machine, 6.9, 7.2), // same room
+    (ObjKind.fan, TargetClass.machine, 9.6, 10.8), // behind a wall
   ];
 
   int correct = 0;
@@ -102,7 +114,7 @@ void main() {
   }
 
   test('a person who stops is still tracked and breathing is measured', () {
-    final r = runScenario(ObjKind.person, 4.0, 9.0,
+    final r = runScenario(ObjKind.person, 3.2, 7.0,
         seconds: 60, stopAfter: 20, trajectory: 2);
     // ignore: avoid_print
     print('stopped person: ${describe(r.track)}  '

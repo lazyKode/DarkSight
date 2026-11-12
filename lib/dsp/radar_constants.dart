@@ -8,7 +8,7 @@ class Radar {
   static const int samples = 256; // ADC samples per chirp
   static const int bins = 200; // range bins displayed (of samples)
   static const double prf = 256; // track-dwell chirp rate, Hz
-  static const double gain = 4; // system gain: amplitude = G sqrt(rcs) / r^2
+  static const double gain = 8; // system gain: amplitude = G sqrt(rcs) / r^2
 
   /// Search beam, two-way: amplitude gain exp(-d^2 / 2 sigma^2).
   static const double beamSigma = 1.4 * math.pi / 180;
