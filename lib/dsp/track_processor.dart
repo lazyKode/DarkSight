@@ -4,6 +4,16 @@ import 'dart:typed_data';
 import 'fft.dart';
 import 'radar_constants.dart';
 
+/// Learned static clutter for one dwell beam position: complex sum and
+/// difference channel values per absolute range bin. Shared by every track
+/// that uses that beam, and kept between visits.
+class ClutterMap {
+  static const int len = Radar.bins + 64;
+  final Float64List sr = Float64List(len), si = Float64List(len);
+  final Float64List dr = Float64List(len), di = Float64List(len);
+  final Uint8List seen = Uint8List(len);
+}
+
 /// One position/velocity measurement from a block of dwell chirps.
 class DwellMeasurement {
   const DwellMeasurement(
@@ -33,8 +43,9 @@ class SignatureFeatures {
 ///
 /// Steps, in order:
 ///  1. Sum/difference channels from the two squinted lobes.
-///  2. Clutter map per absolute range bin (exponential average, 2 s):
-///     subtracting it removes walls and furniture (MTI).
+///  2. Clutter map per beam position and absolute range bin (exponential
+///     average, 2 s), kept between visits: subtracting it removes walls and
+///     furniture (MTI).
 ///  3. Coherent range-gate sum -> one slow-time sample per chirp.
 ///  4. Every 8 chirps: power-weighted range, amplitude-comparison monopulse
 ///     angle, pulse-pair Doppler; and one 64-point micro-Doppler column.
@@ -61,12 +72,8 @@ class TrackProcessor {
   static final double _clutterA =
       1 - math.exp(-1 / (Radar.prf * _clutterTau));
 
-  // Clutter maps (absolute bins, with margin), sum and difference channels.
-  static const int _mapLen = Radar.bins + 64;
-  final Float64List _cSr = Float64List(_mapLen), _cSi = Float64List(_mapLen);
-  final Float64List _cDr = Float64List(_mapLen), _cDi = Float64List(_mapLen);
-  final Uint8List _seen = Uint8List(_mapLen);
-  double _mapBearing = double.nan;
+  // Clutter map of the beam currently in use.
+  ClutterMap _map = ClutterMap();
 
   // Block accumulators.
   final Float64List _binPow = Float64List(g);
@@ -115,18 +122,14 @@ class TrackProcessor {
     return 2 * s * s * w2 * Radar.sigGate;
   }
 
-  /// Clears the clutter map, e.g. after the dwell beam jumps.
-  void resetClutter() => _seen.fillRange(0, _mapLen, 0);
+  /// Switches to the clutter map of a new beam position.
+  void useClutterMap(ClutterMap m) => _map = m;
 
   /// Feeds one chirp. [lr]/[li] and [rr]/[ri] are the left and right lobe
   /// gate samples (bins k0-7 .. k0+7). Returns a measurement every 8 chirps.
-  DwellMeasurement? push(int k0, double bearing, Float64List lr, Float64List li,
+  DwellMeasurement? push(int k0, Float64List lr, Float64List li,
       Float64List rr, Float64List ri) {
-    if (bearing != _mapBearing) {
-      // New beam position: the clutter seen from here is different.
-      resetClutter();
-      _mapBearing = bearing;
-    }
+    final cm = _map;
     final norm = 1 / (2 * Radar.lobeGain);
     double gRe = 0, gIm = 0;
     if (_blockN == 0) _blockK0 = k0;
@@ -135,20 +138,20 @@ class TrackProcessor {
       final m = k + 32;
       final sr = (lr[j] + rr[j]) * norm, si = (li[j] + ri[j]) * norm;
       final dr = (rr[j] - lr[j]) * norm, di = (ri[j] - li[j]) * norm;
-      if (m < 0 || m >= _mapLen) continue;
-      if (_seen[m] == 0) {
-        _cSr[m] = sr;
-        _cSi[m] = si;
-        _cDr[m] = dr;
-        _cDi[m] = di;
-        _seen[m] = 1;
+      if (m < 0 || m >= ClutterMap.len) continue;
+      if (cm.seen[m] == 0) {
+        cm.sr[m] = sr;
+        cm.si[m] = si;
+        cm.dr[m] = dr;
+        cm.di[m] = di;
+        cm.seen[m] = 1;
       }
-      final ysr = sr - _cSr[m], ysi = si - _cSi[m];
-      final ydr = dr - _cDr[m], ydi = di - _cDi[m];
-      _cSr[m] += _clutterA * ysr;
-      _cSi[m] += _clutterA * ysi;
-      _cDr[m] += _clutterA * ydr;
-      _cDi[m] += _clutterA * ydi;
+      final ysr = sr - cm.sr[m], ysi = si - cm.si[m];
+      final ydr = dr - cm.dr[m], ydi = di - cm.di[m];
+      cm.sr[m] += _clutterA * ysr;
+      cm.si[m] += _clutterA * ysi;
+      cm.dr[m] += _clutterA * ydr;
+      cm.di[m] += _clutterA * ydi;
       final p = ysr * ysr + ysi * ysi;
       // Bins relative to the block's first gate position.
       final jj = k - (_blockK0 - half);

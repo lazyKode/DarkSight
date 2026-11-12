@@ -614,6 +614,7 @@ class SimRadarSource extends RadarSource {
     tr.li.fillRange(0, Radar.gate, 0);
     tr.rr.fillRange(0, Radar.gate, 0);
     tr.ri.fillRange(0, Radar.gate, 0);
+    if (track.beamIndex < 0) tr.pointBeam(track);
     final th = _wrapBearing(track.beamBearing);
     final k0 = tr.mToBin(track.range);
     const sq = Radar.squint;
@@ -730,7 +731,10 @@ class SimRadarSource extends RadarSource {
     if (dt > 0.1) dt = 0.1;
     tracker.maxRange = frame.maxRange;
     tracker.wallsTo ??= detector.wallsBetween;
-    if (_builtStaticRev != scene.staticRevision) _rebuildStatic();
+    if (_builtStaticRev != scene.staticRevision) {
+      _rebuildStatic();
+      tracker.clearClutter();
+    }
 
     // Chirp-rate loop: animation and track dwells at 256 Hz.
     const step = 1 / Radar.prf;

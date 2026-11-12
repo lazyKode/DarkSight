@@ -11,14 +11,13 @@ enum TrackStatus { tentative, confirmed, coasting }
 /// (x right, y down on screen).
 class Track {
   Track(this.id, this.x, this.y, double noise)
-      : processor = TrackProcessor(noise) {
-    beamBearing = bearing;
-  }
+      : processor = TrackProcessor(noise);
 
-  /// Where the dwell beam points. Held steady (static clutter must look the
-  /// same from chirp to chirp for MTI to cancel it) and re-pointed only when
-  /// the target drifts more than 1.5 degrees off it.
-  double beamBearing = 0;
+  /// Where the dwell beam points: a fixed grid position, held steady (static
+  /// clutter must look the same chirp to chirp for MTI to cancel it) and
+  /// moved only when the target drifts past half a grid step.
+  double beamBearing = double.nan;
+  int beamIndex = -1;
 
   final int id;
   double x, y;
@@ -96,7 +95,7 @@ class Tracker {
         if (t.sinceEvidence > 0.5) {
           t.x += 0.5 * (x - t.x);
           t.y += 0.5 * (y - t.y);
-          t.beamBearing = t.bearing;
+          _point(t);
         }
         return;
       }
@@ -110,7 +109,8 @@ class Tracker {
   /// Called by the radar after each dwell chirp for [t], with the channel
   /// buffers filled.
   void onChirp(Track t, int k0) {
-    final m = t.processor.push(k0, t.beamBearing, lr, li, rr, ri);
+    if (t.beamIndex < 0) _point(t);
+    final m = t.processor.push(k0, lr, li, rr, ri);
     if (m != null) _measure(t, m, Radar.hop / Radar.prf);
   }
 
@@ -148,7 +148,21 @@ class Tracker {
     double off = t.bearing - t.beamBearing;
     if (off > math.pi) off -= 2 * math.pi;
     if (off < -math.pi) off += 2 * math.pi;
-    if (off.abs() > 1.5 * math.pi / 180) t.beamBearing = t.bearing;
+    if (off.abs() > 0.6 * Radar.beamGrid) _point(t);
+  }
+
+  /// Clutter maps per beam position, shared by all tracks and kept.
+  final Map<int, ClutterMap> _clutter = {};
+
+  void pointBeam(Track t) => _point(t);
+
+  void _point(Track t) {
+    const n = 2 * math.pi / Radar.beamGrid;
+    final idx = ((t.bearing / Radar.beamGrid).round() % n.round() + n.round()) %
+        n.round();
+    t.beamIndex = idx;
+    t.beamBearing = idx * Radar.beamGrid;
+    t.processor.useClutterMap(_clutter.putIfAbsent(idx, ClutterMap.new));
   }
 
   /// Housekeeping once per display frame.
@@ -207,5 +221,16 @@ class Tracker {
     }
   }
 
-  void clear() => tracks.clear();
+  /// Forget learned clutter (the room or the radar moved).
+  void clearClutter() {
+    _clutter.clear();
+    for (final t in tracks) {
+      t.beamIndex = -1;
+    }
+  }
+
+  void clear() {
+    tracks.clear();
+    _clutter.clear();
+  }
 }

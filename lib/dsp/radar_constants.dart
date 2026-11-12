@@ -17,6 +17,9 @@ class Radar {
   /// straight away), two-way sigma.
   static const double dwellSigma = 6.0 * math.pi / 180;
 
+  /// Dwell beams point on a fixed grid with this spacing.
+  static const double beamGrid = 3.0 * math.pi / 180;
+
   /// Monopulse: two receive lobes squinted +/- this angle.
   static const double squint = 4.0 * math.pi / 180;
 
