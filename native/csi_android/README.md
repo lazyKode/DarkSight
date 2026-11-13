@@ -1,4 +1,7 @@
-# Raw CSI on Android (not implemented)
+# Raw CSI on Android phones (not implemented)
+
+The working CSI path is the ESP32 sensor in `firmware/esp32_csi`. This note
+explains why the phone itself cannot provide CSI.
 
 Stock Android has no API for channel state information, and
 `CHANGE_WIFI_STATE` does not unlock one. Getting per-subcarrier CSI on a

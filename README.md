@@ -10,7 +10,7 @@ Flutter (Dart 3), dark-only, three tiers behind one mode switch (SIM / CSI / SDR
 | Tier | What it does | State |
 |---|---|---|
 | 1. Simulation | Simulated 2.4 GHz tracking radar over an editable floor plan: search sweep, monopulse track dwell, micro-Doppler, breathing, human / dog / cat / machinery classification, photo export | Complete |
-| 2. Wi-Fi sensing | Presence/motion from the phone's Wi-Fi | RSSI fallback working (Android); raw CSI is a TODO |
+| 2. Wi-Fi sensing | Real motion detection: ESP32 CSI sensor (any phone app) or phone Wi-Fi strength (Android). No simulated data | Working; ESP32 firmware included |
 | 3. External radar | Pairing flow, DSP chain, three views, overlay | Runs end to end on a built-in mock IQ stream and on UDP range-Doppler frames; real device decoders are TODOs |
 
 > **Build status.** Every push runs `flutter analyze` and `flutter test` in
@@ -157,24 +157,57 @@ live micro-Doppler waterfall and the chest-motion trace.
 histogram stretch, unsharp mask, green intensifier palette, vignette, grain,
 scan lines and a HUD, and exports a PNG via the share sheet.
 
-## Tier 2: Wi-Fi sensing
+## Tier 2: Wi-Fi sensing (real data only)
 
-What works: `MainActivity.kt` exposes the connected access point's RSSI over
-the `darksight/wifi` channel; `lib/dsp/motion_detector.dart` removes the
-static level, integrates residual energy, and applies an adaptive threshold
-with hysteresis. RSSI is coarse (1 dB steps, refreshed every few seconds by
-most drivers), so expect it to catch someone walking through the line
-between phone and router, not subtle motion.
+This mode uses real radio measurements and nothing else. With no real signal
+it says so and shows nothing. There is no simulated fallback.
 
-On iOS, desktop, or with Wi-Fi off, the screen switches to a synthetic
-signal and says so in an amber banner.
+| Where you run it | What it can use |
+|---|---|
+| Website (any device) | Nothing: browsers cannot read Wi-Fi signals |
+| iPhone app | ESP32 sensor only (iOS does not let apps read Wi-Fi strength) |
+| Android app | ESP32 sensor, or the phone's own Wi-Fi strength (coarse) |
 
-What does not: raw CSI. No stock Android phone exposes it and
-`CHANGE_WIFI_STATE` does not unlock it. It needs root plus patched firmware
-(Nexmon CSI on certain Broadcom chips). The Intel AX200/AX210 and MediaTek
-MT7921 are laptop cards. Details and the integration point are in
-`native/csi_android/README.md`. The 90 % recall / 1 false alarm per 10 min
-target has not been measured and is unlikely to be met on RSSI alone.
+**ESP32 sensor (recommended).** An ESP32 board on your Wi-Fi pings the
+router about 50 times a second and reads the channel state information (CSI)
+of every reply: the amplitude of 64 OFDM subcarriers. A person moving
+anywhere in the radio path, including in another room, changes how the
+signal bounces around and shows up in the CSI. The board streams it to the
+app over UDP port 4211.
+
+1. Buy any classic ESP32 dev board (ESP32-WROOM / "ESP32 Dev Module",
+   about $5–10). ESP32-S2, C3 and C6 are different chips and are not
+   covered by this sketch.
+2. Arduino IDE → Boards Manager → install **esp32 by Espressif Systems**.
+3. Open `firmware/esp32_csi/esp32_csi.ino` and set `WIFI_SSID` and
+   `WIFI_PASS`. Select **ESP32 Dev Module** and upload.
+4. In Serial Monitor (115200 baud), note the board's IP.
+5. Place the board 3–6 m from the router, so the area you want to watch is
+   between or around them.
+6. In the app's CSI tab, enter the IP and tap **Connect**. Keep the area
+   empty for the 20 s calibration.
+
+CI compiles this firmware on every push.
+
+**Phone Wi-Fi strength (Android).** The app reads the signal strength of the
+connected router (`WifiManager`), which Android refreshes roughly once a
+second. It notices people walking between the phone and the router, but it
+is coarse and easily disturbed.
+
+**How detection works.** Each source feeds the same detector:
+
+1. A 20 s calibration with the area empty learns the room's normal flicker.
+2. The motion metric is the short-window variance of each subcarrier
+   amplitude relative to its mean (CSI), or the variance in dB² (RSSI).
+3. The threshold is the calibration median + 6 robust standard deviations.
+4. Motion must exceed it for a moment to trigger, and stay below 80 % of it
+   for 2 s to clear.
+
+If someone moves during calibration, the detector becomes less sensitive
+rather than producing false alarms.
+
+**What it cannot do.** It cannot locate or image a person, tell a person
+from a pet or a fan, or detect someone who is perfectly still.
 
 ## Tier 3: external radar
 
