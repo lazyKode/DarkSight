@@ -722,6 +722,19 @@ class SimRadarSource extends RadarSource {
           }
         }
         if (b.ghostOf != null) break;
+        // Radar -> target -> wall -> radar arrives on the target's bearing
+        // but later: a weaker track just behind a stronger one on the same
+        // bearing is that echo.
+        double db = a.bearing - b.bearing;
+        if (db > math.pi) db -= 2 * math.pi;
+        if (db < -math.pi) db += 2 * math.pi;
+        if (db.abs() < 5 * math.pi / 180 &&
+            b.range - a.range > 0.4 &&
+            b.range - a.range < 4 &&
+            b.excess < 0.5 * a.excess) {
+          b.ghostOf = a.id;
+          break;
+        }
       }
     }
   }

@@ -126,14 +126,21 @@ class TargetClassifier {
     final double? rcs = rcsMoving.isFinite
         ? rcsMoving
         : (moving || f.span > 2.0 ? f.rcsDbsm : null);
+    // A still body shows little beyond its size (remembered from when it
+    // moved) and its breathing; its span, symmetry and "rhythm" are noise
+    // and would slowly drag the decision around during a long rest. Only a
+    // clearly spinning target (machinery) keeps the full feature set.
+    final spinning = f.span > 1.5;
+    final full = moving || spinning;
     final x = <String, double>{
       if (rcs != null && rcs.isFinite) 'rcs': rcs,
-      'span': math.log(math.max(f.span, 0.25)),
-      'sym': f.symmetry,
-      if (f.cadenceSnr > 4) 'cad': math.log(math.max(f.cadence, 0.5)),
+      if (full) 'span': math.log(math.max(f.span, 0.25)),
+      if (full) 'sym': f.symmetry,
+      if (full && f.cadenceSnr > 4) 'cad': math.log(math.max(f.cadence, 0.5)),
       if (!moving && f.breathBpm.isFinite && f.breathSnr > 4)
         'bpm': f.breathBpm,
     };
+    if (x.isEmpty) return;
     lastFeatures = x;
     final table = moving ? _moving : _still;
     final lp = <TargetClass, double>{};
@@ -147,9 +154,10 @@ class TargetClassifier {
       }
       lp[c] = s;
     }
-    // Machinery does not walk: when the track is moving it gets the
-    // worst score of the others minus a margin.
-    if (!lp.containsKey(TargetClass.machine)) {
+    // Machinery does not walk, and a still target that is not spinning is
+    // not machinery: it gets the worst score of the others minus a margin.
+    if (!lp.containsKey(TargetClass.machine) || !spinning) {
+      lp.remove(TargetClass.machine);
       lp[TargetClass.machine] = lp.values.reduce(math.min) - 8;
     }
     // Normalise to log-posterior for this window before fusing.
@@ -160,7 +168,8 @@ class TargetClassifier {
     }
     for (final c in TargetClass.values) {
       final l = lp[c]! - mx - math.log(z);
-      evidence[c] = _lambda * evidence[c]! + _weight * l;
+      // A still look carries less information than a moving one.
+      evidence[c] = _lambda * evidence[c]! + (full ? _weight : 0.4 * _weight) * l;
     }
     updates++;
   }
