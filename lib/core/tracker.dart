@@ -52,6 +52,11 @@ class Track {
 
   bool get moving => speed > 0.25;
   bool get still => speed < 0.15;
+
+  /// Seconds in the current motion state (moving / still), so a signature
+  /// window never mixes walking with resting.
+  double stateTime = 0;
+  int _state = 0;
 }
 
 /// Track management: initiation from search-sweep motion detections,
@@ -191,18 +196,26 @@ class Tracker {
             ? TrackStatus.coasting
             : TrackStatus.confirmed;
       }
+      final st = t.moving ? 1 : (t.still ? -1 : 0);
+      if (st != t._state) {
+        t._state = st;
+        t.stateTime = 0;
+      } else {
+        t.stateTime += dt;
+      }
       if (doFeatures && t.status != TrackStatus.tentative) {
         t.walls = wallsTo?.call(t.x, t.y) ?? 0;
-        t.features = t.processor.features(
-          rangeM: math.max(t.range, 0.5),
-          maxRange: maxRange,
-          walls: t.walls,
-          still: t.still,
-          stillSeconds: t.stillTime,
-        );
-        if (!t.moving && !t.still) {
-          // In between: not a clean look either way.
-        } else {
+        // Look only at the time since the target last started or stopped.
+        final window = math.min(8.5, t.stateTime);
+        if (st != 0 && window >= 3.2) {
+          t.features = t.processor.features(
+            rangeM: math.max(t.range, 0.5),
+            maxRange: maxRange,
+            walls: t.walls,
+            seconds: window,
+            still: t.still,
+            stillSeconds: t.stillTime,
+          );
           t.classifier.update(t.features, moving: t.moving);
         }
       }
