@@ -79,6 +79,7 @@ class SceneObject {
   final List<double> path = [];
   double pause = 0;
   double legSpeed = 1.0;
+  double stuck = 0; // seconds unable to make progress
 
   /// Keep an animal within ~2 m of where it was placed instead of roaming
   /// the building.

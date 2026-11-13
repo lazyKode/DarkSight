@@ -23,6 +23,8 @@ class Detection {
 class RadarDetector {
   static const int g = 96;
   final Uint8List _occ = Uint8List(g * g);
+  final Float32List _persist = Float32List(g * g);
+  double _persistMaxR = -1;
   final Uint8List _cls = Uint8List(g * g);
   final Uint16List _hRun = Uint16List(g * g);
   final Uint16List _vRun = Uint16List(g * g);
@@ -96,6 +98,19 @@ class RadarDetector {
         if (gx < 0 || gy < 0 || gx >= g || gy >= g) continue;
         _occ[gy * g + gx] |= 3;
       }
+    }
+
+    // Occupancy memory (about 10 s): weak structure such as a wall seen
+    // through another wall is detected only now and then; remembering it
+    // fills in the map. Moving returns do not persist long enough to count.
+    if (_persistMaxR != maxR) {
+      _persist.fillRange(0, g * g, 0);
+      _persistMaxR = maxR;
+    }
+    for (int i = 0; i < g * g; i++) {
+      final hit = (_occ[i] & 1) != 0 && (_occ[i] & 2) == 0 ? 1.0 : 0.0;
+      _persist[i] = 0.98 * _persist[i] + 0.02 * hit;
+      if (_persist[i] > 0.25) _occ[i] |= 1;
     }
 
     // 2. Run lengths: long straight runs are structure.

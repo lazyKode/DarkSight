@@ -417,11 +417,19 @@ class SimRadarSource extends RadarSource {
     if (_clear(p.x, p.y, nx, ny)) {
       p.x = nx;
       p.y = ny;
+      p.stuck = 0;
     } else {
       // About to clip a wall (e.g. cutting the corner of a doorway): stop
-      // and turn on the spot toward the waypoint instead.
+      // and turn on the spot toward the waypoint. If the waypoint is not
+      // reachable from here, plan again from where we are.
       p.speed *= 0.3;
       p.heading = math.atan2(dy, dx);
+      p.stuck += dt;
+      if (p.stuck > 0.8 || !_clear(p.x, p.y, tx, ty)) {
+        p.path.clear();
+        p.stuck = 0;
+        p.pause = 0.5;
+      }
     }
   }
 
