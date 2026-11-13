@@ -412,8 +412,17 @@ class SimRadarSource extends RadarSource {
     double target = p.legSpeed * (0.3 + 0.7 * math.max(0, math.cos(turn)));
     if (last) target = math.min(target, 0.25 + d * 0.9);
     p.speed += (target - p.speed) * math.min(1, dt * 1.8);
-    p.x += p.speed * math.cos(p.heading) * dt;
-    p.y += p.speed * math.sin(p.heading) * dt;
+    final nx = p.x + p.speed * math.cos(p.heading) * dt;
+    final ny = p.y + p.speed * math.sin(p.heading) * dt;
+    if (_clear(p.x, p.y, nx, ny)) {
+      p.x = nx;
+      p.y = ny;
+    } else {
+      // About to clip a wall (e.g. cutting the corner of a doorway): stop
+      // and turn on the spot toward the waypoint instead.
+      p.speed *= 0.3;
+      p.heading = math.atan2(dy, dx);
+    }
   }
 
   void _wander(SceneObject p, double v, double leash, double dt) {

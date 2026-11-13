@@ -115,8 +115,12 @@ class TargetClassifier {
   void update(SignatureFeatures f, {required bool moving}) {
     if (!f.detected) return;
     if (moving && f.rcsDbsm.isFinite) {
+      // Most errors make a target read small (crossing the beam sideways,
+      // which MTI partly cancels; being off the beam centre), few make it
+      // read big. So follow increases quickly and decreases slowly.
       _rcsN++;
-      final a = 1 / math.min(_rcsN, 10);
+      final up = f.rcsDbsm > rcsMoving;
+      final a = math.max(1 / _rcsN, up ? 0.3 : 0.05);
       rcsMoving =
           rcsMoving.isNaN ? f.rcsDbsm : rcsMoving + a * (f.rcsDbsm - rcsMoving);
     }
