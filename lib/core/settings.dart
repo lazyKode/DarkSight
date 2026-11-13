@@ -11,7 +11,7 @@ class AppSettings {
     this.noise = 0.25,
     this.playing = true,
     this.personSpeed = 0.8,
-    this.trajectory = 0,
+    this.trajectory = 3,
     this.colormap = 0,
     this.aiOverlay = true,
     this.ghostPlan = true,
@@ -33,7 +33,7 @@ class AppSettings {
   /// Person walking speed, m/s.
   final double personSpeed;
 
-  /// 0 circle, 1 back-and-forth, 2 wander.
+  /// 0 circle, 1 back-and-forth, 2 wander, 3 natural (goes places).
   final int trajectory;
 
   /// 0 inferno, 1 phosphor green, 2 amber, 3 grey.
@@ -90,7 +90,7 @@ class SettingsNotifier extends Notifier<AppSettings> {
         maxRange: p.getDouble('maxRange'),
         noise: p.getDouble('noise'),
         personSpeed: p.getDouble('personSpeed'),
-        trajectory: p.getInt('trajectory'),
+        trajectory: p.getInt('trajectory2'),
         colormap: p.getInt('colormap'),
         aiOverlay: p.getBool('aiOverlay2'),
         ghostPlan: p.getBool('ghostPlan'),
@@ -110,7 +110,7 @@ class SettingsNotifier extends Notifier<AppSettings> {
     p.setDouble('maxRange', s.maxRange);
     p.setDouble('noise', s.noise);
     p.setDouble('personSpeed', s.personSpeed);
-    p.setInt('trajectory', s.trajectory);
+    p.setInt('trajectory2', s.trajectory);
     p.setInt('colormap', s.colormap);
     p.setBool('aiOverlay2', s.aiOverlay);
     p.setBool('ghostPlan', s.ghostPlan);

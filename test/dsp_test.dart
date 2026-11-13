@@ -123,4 +123,65 @@ void main() {
     }
     expect(d.state, MotionState.still);
   });
+
+  test('natural movement goes places through doors, never through walls',
+      () {
+    final scene = SceneController();
+    scene.objects.removeWhere((o) => o.kind.isBody);
+    final p = scene.addObject(ObjKind.person);
+    p
+      ..x = 4.5
+      ..y = 10.5;
+    scene.touch();
+    final radar = SimRadarSource(scene)
+      ..trajectory = 3
+      ..personSpeed = 1.1;
+    final walls = scene.objects.where((o) => o.kind == ObjKind.wall).toList();
+    final doors = scene.objects.where((o) => o.kind == ObjKind.door).toList();
+    bool crossesWall(double ax, double ay, double bx, double by) {
+      double cr(double x1, double y1, double x2, double y2, double px, double py) =>
+          (x2 - x1) * (py - y1) - (y2 - y1) * (px - x1);
+      for (final w in walls) {
+        final d1 = cr(w.x, w.y, w.x2, w.y2, ax, ay);
+        final d2 = cr(w.x, w.y, w.x2, w.y2, bx, by);
+        final d3 = cr(ax, ay, bx, by, w.x, w.y);
+        final d4 = cr(ax, ay, bx, by, w.x2, w.y2);
+        if (((d1 > 0) != (d2 > 0)) && ((d3 > 0) != (d4 > 0))) {
+          final inDoor = doors.any((d) {
+            final dx = (ax + bx) / 2 - d.x, dy = (ay + by) / 2 - d.y;
+            return dx * dx + dy * dy < 0.5 * 0.5;
+          });
+          if (!inDoor) return true;
+        }
+      }
+      return false;
+    }
+
+    int violations = 0;
+    double travelled = 0, stillFor = 0, longestStill = 0;
+    double minX = 99, maxX = -99, minY = 99, maxY = -99;
+    for (int i = 0; i < 30 * 180; i++) {
+      final ox = p.x, oy = p.y;
+      radar.tick(1 / 30);
+      if (crossesWall(ox, oy, p.x, p.y)) violations++;
+      final d = math.sqrt((p.x - ox) * (p.x - ox) + (p.y - oy) * (p.y - oy));
+      travelled += d;
+      stillFor = d < 0.002 ? stillFor + 1 / 30 : 0;
+      longestStill = math.max(longestStill, stillFor);
+      minX = math.min(minX, p.x);
+      maxX = math.max(maxX, p.x);
+      minY = math.min(minY, p.y);
+      maxY = math.max(maxY, p.y);
+    }
+    // ignore: avoid_print
+    print('natural walk: travelled ${travelled.toStringAsFixed(1)} m, '
+        'area x ${minX.toStringAsFixed(1)}..${maxX.toStringAsFixed(1)} '
+        'y ${minY.toStringAsFixed(1)}..${maxY.toStringAsFixed(1)}, '
+        'longest stop ${longestStill.toStringAsFixed(1)} s, '
+        'wall crossings $violations');
+    expect(violations, 0);
+    expect(travelled, greaterThan(20));
+    expect(longestStill, greaterThan(2));
+    expect(maxX - minX, greaterThan(4)); // reaches other rooms
+  });
 }

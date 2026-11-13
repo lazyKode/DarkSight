@@ -144,6 +144,8 @@ class SimRadarSource extends RadarSource {
   /// Re-derive a person's animation anchor from its current position, so the
   /// trajectory continues from wherever the user dropped it.
   void reanchor(SceneObject p) {
+    p.path.clear();
+    p.pause = 1.5;
     if (p.kind != ObjKind.person) {
       p.ax = p.x;
       p.ay = p.y;
@@ -189,6 +191,7 @@ class SimRadarSource extends RadarSource {
         case ObjKind.person:
           if (personSpeed <= 0.001) {
             p.speed = 0;
+            p.path.clear();
             break;
           }
           switch (trajectory) {
@@ -197,17 +200,22 @@ class SimRadarSource extends RadarSource {
               _trajectoryOffset(p);
               p.x = p.ax + _ox;
               p.y = p.ay + _oy;
+              p.speed = personSpeed;
               break;
             case 1:
               p.phase += personSpeed * dt;
               _trajectoryOffset(p);
               p.x = p.ax + _ox;
               p.y = p.ay + _oy;
+              p.speed = personSpeed;
+              break;
+            case 2:
+              _wander(p, personSpeed, 2.5, dt);
+              p.speed = personSpeed;
               break;
             default:
-              _wander(p, personSpeed, 2.5, dt);
+              _natural(p, personSpeed, dt, standLong: true);
           }
-          p.speed = personSpeed;
           break;
         case ObjKind.dog:
         case ObjKind.cat:
@@ -218,9 +226,18 @@ class SimRadarSource extends RadarSource {
                 ? 6 + _rng.nextDouble() * 14
                 : 5 + _rng.nextDouble() * 10;
           }
-          final target = p.resting ? 0.0 : body.cruiseSpeed;
-          p.speed += (target - p.speed) * math.min(1, dt * 2);
-          if (p.speed > 0.02) _wander(p, p.speed, 1.8, dt);
+          if (p.resting) {
+            p.speed += (0 - p.speed) * math.min(1, dt * 2);
+            if (p.speed > 0.02) {
+              p.x += p.speed * math.cos(p.heading) * dt;
+              p.y += p.speed * math.sin(p.heading) * dt;
+            }
+          } else if (p.stayNear) {
+            p.speed += (body.cruiseSpeed - p.speed) * math.min(1, dt * 2);
+            _wander(p, p.speed, 1.8, dt);
+          } else {
+            _natural(p, body.cruiseSpeed, dt, standLong: false);
+          }
           break;
         default:
           p.speed = 0;
@@ -232,6 +249,171 @@ class SimRadarSource extends RadarSource {
       p.moving = p.speed > 0.05;
       p.gait += 2 * math.pi * body.legFreq(p.speed) * dt;
     }
+  }
+
+  // ---- natural movement: pick a place, walk there through doorways ----
+
+  /// True if the straight line between two points crosses no wall (door
+  /// gaps are open).
+  bool _clear(double ax, double ay, double bx, double by) {
+    final n = _seg.length ~/ 4;
+    for (int j = 0; j < n; j++) {
+      final o = j * 4;
+      if (_intersects(
+          ax, ay, bx, by, _seg[o], _seg[o + 1], _seg[o + 2], _seg[o + 3])) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  double _wallDistance(double x, double y) {
+    double best = 1e9;
+    final n = _seg.length ~/ 4;
+    for (int j = 0; j < n; j++) {
+      final ax = _seg[j * 4], ay = _seg[j * 4 + 1];
+      final bx = _seg[j * 4 + 2], by = _seg[j * 4 + 3];
+      final vx = bx - ax, vy = by - ay;
+      final l2 = vx * vx + vy * vy;
+      double t = l2 < 1e-9 ? 0 : ((x - ax) * vx + (y - ay) * vy) / l2;
+      t = t < 0 ? 0.0 : (t > 1 ? 1.0 : t);
+      final dx = ax + t * vx - x, dy = ay + t * vy - y;
+      best = math.min(best, math.sqrt(dx * dx + dy * dy));
+    }
+    return best;
+  }
+
+  /// Chooses a destination somewhere in the building and a route to it:
+  /// straight if nothing is in the way, otherwise through one or two door
+  /// gaps (each crossed square-on via points either side of the gap).
+  bool _planTrip(SceneObject p) {
+    if (_seg.isEmpty) return false;
+    double minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
+    for (int i = 0; i < _seg.length; i += 2) {
+      minX = math.min(minX, _seg[i]);
+      maxX = math.max(maxX, _seg[i]);
+      minY = math.min(minY, _seg[i + 1]);
+      maxY = math.max(maxY, _seg[i + 1]);
+    }
+    if (maxX - minX < 1.5 || maxY - minY < 1.5) return false;
+    // Door crossing points: 0.5 m either side of each gap, perpendicular to
+    // the wall it sits in.
+    final doors = <List<double>>[];
+    for (final d in scene.objects) {
+      if (d.kind != ObjKind.door) continue;
+      double nx = 0, ny = 0, bestD = 1e9;
+      for (final w in scene.objects) {
+        if (w.kind != ObjKind.wall) continue;
+        final vx = w.x2 - w.x, vy = w.y2 - w.y;
+        final l = math.sqrt(vx * vx + vy * vy);
+        if (l < 0.05) continue;
+        final dist = ((d.x - w.x) * vy - (d.y - w.y) * vx).abs() / l;
+        if (dist < bestD) {
+          bestD = dist;
+          nx = -vy / l;
+          ny = vx / l;
+        }
+      }
+      if (bestD > 0.5) continue;
+      doors.add([d.x + nx * 0.5, d.y + ny * 0.5, d.x - nx * 0.5, d.y - ny * 0.5]);
+    }
+    List<double>? via(List<double> d, double fx, double fy, double tx, double ty) {
+      // Enter from whichever side is reachable.
+      for (final s in [0, 2]) {
+        final ix = d[s], iy = d[s + 1], ox = d[2 - s], oy = d[3 - s];
+        if (_clear(fx, fy, ix, iy) && _clear(ox, oy, tx, ty)) {
+          return [ix, iy, ox, oy];
+        }
+      }
+      return null;
+    }
+
+    for (int attempt = 0; attempt < 16; attempt++) {
+      final tx = minX + 0.6 + _rng.nextDouble() * (maxX - minX - 1.2);
+      final ty = minY + 0.6 + _rng.nextDouble() * (maxY - minY - 1.2);
+      if (_wallDistance(tx, ty) < 0.5) continue;
+      final dx = tx - p.x, dy = ty - p.y;
+      if (dx * dx + dy * dy < 2.5) continue;
+      if (_clear(p.x, p.y, tx, ty)) {
+        p.path
+          ..clear()
+          ..addAll([tx, ty]);
+        return true;
+      }
+      for (final d in doors) {
+        final r = via(d, p.x, p.y, tx, ty);
+        if (r != null) {
+          p.path
+            ..clear()
+            ..addAll([...r, tx, ty]);
+          return true;
+        }
+      }
+      for (final d1 in doors) {
+        for (final d2 in doors) {
+          if (identical(d1, d2)) continue;
+          for (final s in [0, 2]) {
+            final ix = d1[s], iy = d1[s + 1], ox = d1[2 - s], oy = d1[3 - s];
+            if (!_clear(p.x, p.y, ix, iy)) continue;
+            final r = via(d2, ox, oy, tx, ty);
+            if (r != null) {
+              p.path
+                ..clear()
+                ..addAll([ix, iy, ox, oy, ...r, tx, ty]);
+              return true;
+            }
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  /// Walks a body along its path with human-like steering: limited turn
+  /// rate, slowing for corners and on arrival. At the end it stands still
+  /// for a while (people sometimes for half a minute) before the next trip.
+  void _natural(SceneObject p, double cruise, double dt,
+      {required bool standLong}) {
+    if (p.pause > 0) {
+      p.pause -= dt;
+      p.speed += (0 - p.speed) * math.min(1, dt * 3);
+      return;
+    }
+    if (p.path.isEmpty) {
+      if (_planTrip(p)) {
+        p.legSpeed = cruise * (0.8 + 0.4 * _rng.nextDouble());
+      } else {
+        p.pause = 1 + _rng.nextDouble() * 2;
+      }
+      return;
+    }
+    final tx = p.path[0], ty = p.path[1];
+    final dx = tx - p.x, dy = ty - p.y;
+    final d = math.sqrt(dx * dx + dy * dy);
+    final last = p.path.length == 2;
+    if (d < (last ? 0.15 : 0.25)) {
+      p.path.removeRange(0, 2);
+      if (p.path.isEmpty) {
+        p.pause = standLong && _rng.nextDouble() < 0.4
+            ? 12 + _rng.nextDouble() * 20
+            : 2 + _rng.nextDouble() * 6;
+      }
+      return;
+    }
+    double turn = math.atan2(dy, dx) - p.heading;
+    while (turn > math.pi) {
+      turn -= 2 * math.pi;
+    }
+    while (turn < -math.pi) {
+      turn += 2 * math.pi;
+    }
+    final maxTurn = 3.5 * dt;
+    p.heading += turn.clamp(-maxTurn, maxTurn).toDouble();
+    double target = p.legSpeed * (0.3 + 0.7 * math.max(0, math.cos(turn)));
+    if (last) target = math.min(target, 0.25 + d * 0.9);
+    p.speed += (target - p.speed) * math.min(1, dt * 1.8);
+    p.x += p.speed * math.cos(p.heading) * dt;
+    p.y += p.speed * math.sin(p.heading) * dt;
   }
 
   void _wander(SceneObject p, double v, double leash, double dt) {

@@ -73,6 +73,16 @@ class SceneObject {
   double behaviourTimer = 0; // animals: seconds left in walk / rest bout
   bool resting = false;
   bool held = false;
+
+  // Natural movement: waypoints still to visit (x, y pairs), seconds left
+  // standing still, and this leg's walking speed.
+  final List<double> path = [];
+  double pause = 0;
+  double legSpeed = 1.0;
+
+  /// Keep an animal within ~2 m of where it was placed instead of roaming
+  /// the building.
+  bool stayNear = false;
   bool moving = false;
 
   Map<String, dynamic> toJson() => {

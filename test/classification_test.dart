@@ -25,6 +25,7 @@ import 'package:flutter_test/flutter_test.dart';
     ..ax = x
     ..ay = y
     ..behaviourTimer = natural ? 0 : 1e9
+    ..stayNear = !natural
     ..resting = false;
   scene.touch();
   final radar = SimRadarSource(scene)

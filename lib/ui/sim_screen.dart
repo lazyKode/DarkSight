@@ -155,7 +155,7 @@ class _SimScreenState extends ConsumerState<SimScreen>
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
-                  'SIMULATION · 2.40 GHz FMCW · SWEEP ${s.sweepRate.toStringAsFixed(1)} rps · '
+                  'SIMULATED SCENE (no live sensor) · 2.40 GHz FMCW · SWEEP ${s.sweepRate.toStringAsFixed(1)} rps · '
                   'DWELL 256 Hz MONOPULSE · TRACKS $n · ${_fps.round()} fps',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -248,7 +248,7 @@ class _SimScreenState extends ConsumerState<SimScreen>
                     Expanded(
                         flex: 3,
                         child: _framed('TARGET DOSSIER', dossier)),
-                    Expanded(flex: 3, child: _framed('FLOOR PLAN', editor)),
+                    Expanded(flex: 3, child: _framed('SIMULATED SCENE', editor)),
                   ],
                 );
               }
@@ -265,7 +265,7 @@ class _SimScreenState extends ConsumerState<SimScreen>
                       labelStyle:
                           const TextStyle(fontSize: 11, letterSpacing: 2),
                       tabs: const [
-                        Tab(height: 30, text: 'FLOOR PLAN'),
+                        Tab(height: 30, text: 'SCENE'),
                         Tab(height: 30, text: 'TARGETS'),
                       ],
                     ),

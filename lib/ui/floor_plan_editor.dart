@@ -283,7 +283,7 @@ class _FloorPlanEditorState extends State<FloorPlanEditor> {
             children: [
               const SizedBox(width: 8),
               const Expanded(
-                child: Text('FLOOR PLAN',
+                child: Text('Simulated room: edit it, the radar only sees signals',
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(color: kDim, fontSize: 11)),
               ),

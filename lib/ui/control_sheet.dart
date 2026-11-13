@@ -78,7 +78,7 @@ class ControlSheet extends ConsumerWidget {
               slider('Noise level', '${(s.noise * 100).round()} %', s.noise, 0,
                   1, (v) => n.update(s.copyWith(noise: v))),
               slider(
-                  'Person speed',
+                  'Walking speed',
                   '${s.personSpeed.toStringAsFixed(1)} m/s',
                   s.personSpeed,
                   0,
@@ -91,17 +91,27 @@ class ControlSheet extends ConsumerWidget {
                       width: 104,
                       child: Text('Trajectory',
                           style: TextStyle(fontSize: 12, color: kDim))),
-                  for (int i = 0; i < 3; i++)
-                    Padding(
-                      padding: const EdgeInsets.only(right: 6),
-                      child: ChoiceChip(
-                        label: Text(const ['Circle', 'Patrol', 'Wander'][i],
-                            style: const TextStyle(fontSize: 12)),
-                        selected: s.trajectory == i,
-                        onSelected: (_) =>
-                            n.update(s.copyWith(trajectory: i)),
-                      ),
+                  Expanded(
+                    child: Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      children: [
+                        for (final m in const [
+                          (3, 'Natural'),
+                          (0, 'Circle'),
+                          (1, 'Patrol'),
+                          (2, 'Wander'),
+                        ])
+                          ChoiceChip(
+                            label: Text(m.$2,
+                                style: const TextStyle(fontSize: 12)),
+                            selected: s.trajectory == m.$1,
+                            onSelected: (_) =>
+                                n.update(s.copyWith(trajectory: m.$1)),
+                          ),
+                      ],
                     ),
+                  ),
                 ],
               ),
               const SizedBox(height: 6),
