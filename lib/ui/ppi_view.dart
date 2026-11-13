@@ -217,9 +217,9 @@ class PpiPainter extends CustomPainter {
               ..color = color.withOpacity(wall ? 0.45 : 0.8)
               ..style = PaintingStyle.stroke
               ..strokeWidth = wall ? 0.8 : 1.2);
-        if (!wall) {
-          paintLabel(canvas, 'STATIC OBJECT', Offset(r.left, r.top - 12),
-              color, size: 8, background: true);
+        if (!wall && r.longestSide > 26) {
+          paintLabel(canvas, 'OBJECT', Offset(r.left, r.top - 11), color,
+              size: 8, background: true);
         }
       }
       for (final t in model.tracks) {

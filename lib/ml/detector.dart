@@ -72,7 +72,7 @@ class RadarDetector {
             sum += pre[hi2 + 1] - pre[hi1];
             cnt += hi2 - hi1 + 1;
           }
-          hit = cnt > 0 && v - sum / cnt > 0.22; // ~13 dB over the local mean
+          hit = cnt > 0 && v - sum / cnt > 0.3; // 18 dB over the local mean
         }
         if (!hit) continue;
         final r = (k + 0.5) / bins * maxR;
@@ -201,8 +201,9 @@ class RadarDetector {
         out.add(box(c, 'wall', 0.9));
       } else if (c[0] == 3 && c[5] >= 2 && extent(c) <= 2.0) {
         out.add(box(c, 'motion', math.min(0.95, 0.5 + c[5] * 0.05)));
-      } else if (c[0] == 4 && c[5] >= 2 && c[6] == 0) {
-        // Static fragments hanging off a wall are wall, not objects.
+      } else if (c[0] == 4 && c[5] >= 6 && c[6] == 0 && extent(c) >= 0.5) {
+        // Static fragments hanging off a wall are wall, not objects; small
+        // specks are noise peaks.
         out.add(box(c, 'object', 0.6));
       }
     }

@@ -36,16 +36,24 @@ class HomeShell extends ConsumerWidget {
     return Scaffold(
       appBar: AppBar(
         toolbarHeight: 48,
-        title: const Text('DARKSIGHT',
-            style: TextStyle(letterSpacing: 4, fontSize: 16)),
+        titleSpacing: 12,
+        title: const FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: Text('DARKSIGHT',
+              style: TextStyle(letterSpacing: 4, fontSize: 16)),
+        ),
         actions: [
           Padding(
             padding: const EdgeInsets.only(right: 8),
             child: SegmentedButton<RadarMode>(
+              // Compact enough for a 320 px wide phone.
               showSelectedIcon: false,
               style: const ButtonStyle(
                 visualDensity: VisualDensity.compact,
                 tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                padding: WidgetStatePropertyAll(
+                    EdgeInsets.symmetric(horizontal: 10)),
               ),
               segments: const [
                 ButtonSegment(value: RadarMode.sim, label: Text('SIM')),

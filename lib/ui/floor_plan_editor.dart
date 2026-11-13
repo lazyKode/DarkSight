@@ -282,9 +282,11 @@ class _FloorPlanEditorState extends State<FloorPlanEditor> {
           child: Row(
             children: [
               const SizedBox(width: 8),
-              const Text('FLOOR PLAN',
-                  style: TextStyle(color: kDim, fontSize: 11)),
-              const Spacer(),
+              const Expanded(
+                child: Text('FLOOR PLAN',
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: kDim, fontSize: 11)),
+              ),
               PopupMenuButton<ObjKind>(
                 tooltip: 'Add to the floor plan',
                 color: kSurface,
