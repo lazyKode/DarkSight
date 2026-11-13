@@ -13,7 +13,9 @@ import 'package:flutter_test/flutter_test.dart';
     ObjKind kind, double x, double y,
     {double seconds = 40,
     double stopAfter = double.infinity,
-    int trajectory = 2}) {
+    int trajectory = 2,
+    bool natural = false,
+    void Function(double t, SimRadarSource r, SceneObject b)? onSecond}) {
   final scene = SceneController();
   scene.objects.removeWhere((o) => o.kind.isBody);
   final body = scene.addObject(kind);
@@ -22,7 +24,7 @@ import 'package:flutter_test/flutter_test.dart';
     ..y = y
     ..ax = x
     ..ay = y
-    ..behaviourTimer = 1e9
+    ..behaviourTimer = natural ? 0 : 1e9
     ..resting = false;
   scene.touch();
   final radar = SimRadarSource(scene)
@@ -30,7 +32,12 @@ import 'package:flutter_test/flutter_test.dart';
     ..personSpeed = 1.0
     ..trajectory = trajectory;
   const dt = 1 / 30;
+  double nextReport = 1;
   for (double t = 0; t < seconds; t += dt) {
+    if (onSecond != null && t >= nextReport) {
+      nextReport += 5;
+      onSecond(t, radar, body);
+    }
     if (t > stopAfter) {
       radar.personSpeed = 0;
       body.resting = true;
@@ -126,6 +133,26 @@ void main() {
     expect((r.track!.features.breathBpm - r.body.body!.breathHz * 60).abs(),
         lessThan(5));
   }, timeout: const Timeout(Duration(minutes: 3)));
+
+  for (final k in [ObjKind.dog, ObjKind.cat]) {
+    test('${k.name} with natural walk / rest bouts', () {
+      final r = runScenario(k, 10.2, 9.6, seconds: 90, natural: true,
+          onSecond: (t, radar, b) {
+        final ts = radar.tracker.tracks
+            .map((tr) => 'T${tr.id}(${tr.status.name} '
+                'sp=${tr.speed.toStringAsFixed(2)} '
+                '${tr.classifier.best?.label ?? '-'} '
+                'rcsMov=${tr.classifier.rcsMoving.toStringAsFixed(1)} '
+                'f=${tr.classifier.lastFeatures.map((k, v) => MapEntry(k, v.toStringAsFixed(2)))})')
+            .join(' ');
+        // ignore: avoid_print
+        print('  t=${t.round()} truth speed=${b.speed.toStringAsFixed(2)} '
+            'resting=${b.resting} $ts');
+      });
+      // ignore: avoid_print
+      print('${k.name} natural: ${describe(r.track)}');
+    }, timeout: const Timeout(Duration(minutes: 4)));
+  }
 
   tearDownAll(() {
     // ignore: avoid_print
