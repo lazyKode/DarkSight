@@ -34,7 +34,9 @@ class _G {
 /// Per-class feature distributions were fitted by
 /// tools/classifier_proto/nb.py on 220 labelled synthetic tracks (randomised
 /// individuals, 0-2 walls, 2.5-8 m) and checked on a separate 165-track test
-/// set. Standard deviations have floors so no single feature dominates.
+/// set. Standard deviations have floors so no single feature dominates;
+/// RCS gets a wide one (5 dB) because wall loss behind undetected walls and
+/// sideways motion make it the least reliable feature in practice.
 /// On real hardware these tables must be refitted from recorded data.
 ///
 /// Features: RCS (dBsm), log micro-Doppler span, spread symmetry, log
@@ -43,19 +45,19 @@ class _G {
 class TargetClassifier {
   static const _moving = <TargetClass, Map<String, _G>>{
     TargetClass.human: {
-      'rcs': _G(1.46, 4.79),
+      'rcs': _G(1.46, 5.0),
       'span': _G(1.47, 0.49),
       'sym': _G(0.25, 0.15),
       'cad': _G(0.71, 0.2),
     },
     TargetClass.dog: {
-      'rcs': _G(-5.82, 3.54),
+      'rcs': _G(-5.82, 5.0),
       'span': _G(1.58, 0.64),
       'sym': _G(0.30, 0.20),
       'cad': _G(1.17, 0.21),
     },
     TargetClass.cat: {
-      'rcs': _G(-10.98, 3.66),
+      'rcs': _G(-10.98, 5.0),
       'span': _G(0.79, 0.66),
       'sym': _G(0.15, 0.15),
       'cad': _G(0.89, 0.2),
@@ -64,28 +66,28 @@ class TargetClassifier {
 
   static const _still = <TargetClass, Map<String, _G>>{
     TargetClass.human: {
-      'rcs': _G(1.44, 3.38),
+      'rcs': _G(1.44, 5.0),
       'span': _G(-0.43, 0.32),
       'sym': _G(1.0, 0.15),
       'cad': _G(0.49, 0.40),
       'bpm': _G(16, 4.5),
     },
     TargetClass.dog: {
-      'rcs': _G(-5.16, 3.83),
+      'rcs': _G(-5.16, 5.0),
       'span': _G(-0.40, 0.32),
       'sym': _G(1.0, 0.15),
       'cad': _G(0.66, 0.29),
       'bpm': _G(26, 6),
     },
     TargetClass.cat: {
-      'rcs': _G(-10.59, 3.43),
+      'rcs': _G(-10.59, 5.0),
       'span': _G(-0.69, 0.3),
       'sym': _G(0.86, 0.35),
       'cad': _G(0.59, 0.40),
       'bpm': _G(28, 6.5),
     },
     TargetClass.machine: {
-      'rcs': _G(-10.12, 3.78),
+      'rcs': _G(-10.12, 5.0),
       'span': _G(2.41, 0.66),
       'sym': _G(0.92, 0.22),
       'cad': _G(1.72, 0.56),
