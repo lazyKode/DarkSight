@@ -56,7 +56,19 @@ signature analysis, classification) works from the radio samples alone, and
 a test (`test/classification_test.dart`) checks that none of that code
 imports the scene.
 
-**Scene.** Walls, door gaps, furniture, and four kinds of moving thing:
+**Scene (simulated).** Nothing in SIM mode is sensed from the real world:
+a phone or browser has no radio that can see through walls. The room and
+everything in it are made up. What is real is the processing: the radar
+signal is computed from physics, and tracking and classification work only
+from that signal.
+
+People move naturally by default: they pick a destination anywhere in the
+building, route through door gaps (never through walls), steer with a
+limited turn rate, slow for corners and on arrival, then stand still for a
+few seconds or up to half a minute. Dogs and cats do the same between rest
+bouts. Circle, Patrol and Wander remain as test patterns in Controls.
+
+Walls, door gaps, furniture, and four kinds of moving thing:
 people, dogs, cats and fans. Each individual gets its own size, gait and
 breathing rate drawn around a population mean.
 
@@ -121,6 +133,11 @@ places each kind of target in and behind walls and checks the label
 **Multipath ghosts.** A track at the mirror image of a nearer track across a
 detected wall is labelled as that target's reflection instead of being
 counted as another target.
+
+**Known weak spot.** Telling a small dog from a cat is the least reliable
+decision. When a dog roams behind several walls, the size estimate drops
+(walls the radar has not detected go uncorrected), and it can be labelled
+CAT. People, fans and nearby animals are reliable in the tests.
 
 **What this does not prove.** The class models were fitted to simulated
 bodies, so the simulator and classifier share assumptions. On real hardware
