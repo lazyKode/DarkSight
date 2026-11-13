@@ -11,10 +11,14 @@ import io.flutter.plugin.common.MethodChannel
  *
  * getRssi       -> Int dBm of the associated access point, or null when
  *                  Wi-Fi is off / not associated.
- * csiSupported  -> false. Stock Android has no CSI API; see
- *                  native/csi_android/README.md for the rooted-device path.
+ * multicastLock -> keeps broadcast UDP from the ESP32 sensor arriving
+ *                  while the app is open.
+ * csiSupported  -> false. Stock Android has no CSI API; detailed Wi-Fi
+ *                  sensing uses the ESP32 sensor (firmware/esp32_csi).
  */
 class MainActivity : FlutterActivity() {
+    private var lock: WifiManager.MulticastLock? = null
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "darksight/wifi")
@@ -33,6 +37,21 @@ class MainActivity : FlutterActivity() {
                             }
                         } catch (e: Exception) {
                             result.success(null)
+                        }
+                    }
+                    "multicastLock" -> {
+                        try {
+                            if (lock == null) {
+                                val wm = applicationContext
+                                    .getSystemService(Context.WIFI_SERVICE) as WifiManager
+                                lock = wm.createMulticastLock("darksight").apply {
+                                    setReferenceCounted(false)
+                                    acquire()
+                                }
+                            }
+                            result.success(true)
+                        } catch (e: Exception) {
+                            result.success(false)
                         }
                     }
                     "csiSupported" -> result.success(false)

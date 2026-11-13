@@ -32,6 +32,21 @@ jobs:
       - run: flutter analyze --no-fatal-infos --no-fatal-warnings
       - run: flutter test
 
+  firmware:
+    name: ESP32 firmware compiles
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/compile-sketches@v1
+        with:
+          fqbn: esp32:esp32:esp32
+          platforms: |
+            - name: esp32:esp32
+              source-url: https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          sketch-paths: |
+            - firmware/esp32_csi
+          enable-deltas-report: false
+
   android:
     name: Android APK
     needs: analyze

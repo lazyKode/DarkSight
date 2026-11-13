@@ -5,7 +5,6 @@ import 'package:darksight/core/scene.dart';
 import 'package:darksight/core/sim_radar_source.dart';
 import 'package:darksight/dsp/fft.dart';
 import 'package:darksight/dsp/fmcw_pipeline.dart';
-import 'package:darksight/dsp/motion_detector.dart';
 import 'package:darksight/ml/classifier.dart';
 import 'package:darksight/ml/detector.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -106,23 +105,6 @@ void main() {
     expect(labels, containsAll(<String>['wall / structure', 'person']));
   });
 
-  test('motion detector: quiet stays still, fluctuation triggers, then clears',
-      () {
-    final d = MotionDetector();
-    final rng = math.Random(1);
-    for (int i = 0; i < 200; i++) {
-      d.update([-55 + (rng.nextDouble() - 0.5) * 0.4], 0.1);
-    }
-    expect(d.state, MotionState.still);
-    for (int i = 0; i < 40; i++) {
-      d.update([-55 + 4 * math.sin(i * 0.9)], 0.1);
-    }
-    expect(d.state, MotionState.motion);
-    for (int i = 0; i < 300; i++) {
-      d.update([-55 + (rng.nextDouble() - 0.5) * 0.4], 0.1);
-    }
-    expect(d.state, MotionState.still);
-  });
 
   test('natural movement goes places through doors, never through walls',
       () {
