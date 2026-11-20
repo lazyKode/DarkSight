@@ -56,16 +56,17 @@ class BleScanner {
     _sub = null;
   }
 
-  /// Link-level connect + service discovery. Returns a status line.
-  Future<String> connect(String id) async {
+  /// Link-level connect + service discovery.
+  Future<({bool ok, String message})> connect(String id) async {
     final dev = _devices[id];
-    if (dev == null) return 'Device no longer in range.';
+    if (dev == null) return (ok: false, message: 'Device no longer in range.');
     try {
       await dev.connect(timeout: const Duration(seconds: 10));
       final services = await dev.discoverServices();
-      return 'Connected, ${services.length} GATT services found.';
+      return (ok: true, message: 'Connected, ${services.length} GATT services found.');
     } catch (e) {
-      return 'Connect failed: $e';
+      await disconnect(id); // do not leave a half-open link
+      return (ok: false, message: 'Connect failed: $e');
     }
   }
 

@@ -48,7 +48,10 @@ class _SdrScreenState extends ConsumerState<SdrScreen>
     _ticker = createTicker(_onTick)..start();
   }
 
-  void _connect(SdrDevice d) async {
+  Future<void> Function()? _release;
+
+  void _connect(SdrDevice d, Future<void> Function()? release) async {
+    _release = release;
     final src = SdrRadarSource(d)..start();
     _rdImager = GridImager(src.cfg.chirps, src.cfg.samples);
     _sectorLut = _buildSectorLut(src);
@@ -70,6 +73,8 @@ class _SdrScreenState extends ConsumerState<SdrScreen>
 
   void _disconnect() {
     _source?.dispose();
+    _release?.call();
+    _release = null;
     setState(() => _source = null);
   }
 
@@ -142,6 +147,7 @@ class _SdrScreenState extends ConsumerState<SdrScreen>
   void dispose() {
     _ticker.dispose();
     _source?.dispose();
+    _release?.call();
     _rdImage?.dispose();
     _raImage?.dispose();
     _pages.dispose();

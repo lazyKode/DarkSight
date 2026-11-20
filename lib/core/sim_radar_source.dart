@@ -58,7 +58,18 @@ class SimRadarSource extends RadarSource {
   double _noise = 0.25; // 0..1
   bool playing = true;
   double personSpeed = 0.8; // m/s
-  int trajectory = 0;
+  int _trajectory = 0;
+  int get trajectory => _trajectory;
+
+  /// Switching pattern re-anchors every person at their current position;
+  /// otherwise they would jump to wherever the old pattern's anchor was.
+  set trajectory(int v) {
+    if (v == _trajectory) return;
+    _trajectory = v;
+    for (final o in scene.objects) {
+      if (o.kind == ObjKind.person) reanchor(o);
+    }
+  }
 
   double get noise => _noise;
   set noise(double v) {
@@ -145,7 +156,8 @@ class SimRadarSource extends RadarSource {
   /// trajectory continues from wherever the user dropped it.
   void reanchor(SceneObject p) {
     p.path.clear();
-    p.pause = 1.5;
+    p.activity = BodyActivity.pausing;
+    p.activityLeft = 1.5;
     if (p.kind != ObjKind.person) {
       p.ax = p.x;
       p.ay = p.y;
@@ -192,6 +204,7 @@ class SimRadarSource extends RadarSource {
           if (personSpeed <= 0.001) {
             p.speed = 0;
             p.path.clear();
+            p.activity = BodyActivity.idle;
             break;
           }
           switch (trajectory) {
@@ -214,29 +227,16 @@ class SimRadarSource extends RadarSource {
               p.speed = personSpeed;
               break;
             default:
-              _natural(p, personSpeed, dt, standLong: true);
+              _natural(p, personSpeed, dt, animal: false);
           }
           break;
         case ObjKind.dog:
         case ObjKind.cat:
-          p.behaviourTimer -= dt;
-          if (p.behaviourTimer <= 0) {
-            p.resting = !p.resting;
-            p.behaviourTimer = p.resting
-                ? 6 + _rng.nextDouble() * 14
-                : 5 + _rng.nextDouble() * 10;
-          }
-          if (p.resting) {
-            p.speed += (0 - p.speed) * math.min(1, dt * 2);
-            if (p.speed > 0.02) {
-              p.x += p.speed * math.cos(p.heading) * dt;
-              p.y += p.speed * math.sin(p.heading) * dt;
-            }
-          } else if (p.stayNear) {
+          if (p.stayNear) {
             p.speed += (body.cruiseSpeed - p.speed) * math.min(1, dt * 2);
             _wander(p, p.speed, 1.8, dt);
           } else {
-            _natural(p, body.cruiseSpeed, dt, standLong: false);
+            _natural(p, body.cruiseSpeed, dt, animal: true);
           }
           break;
         default:
@@ -369,22 +369,36 @@ class SimRadarSource extends RadarSource {
     return false;
   }
 
-  /// Walks a body along its path with human-like steering: limited turn
-  /// rate, slowing for corners and on arrival. At the end it stands still
-  /// for a while (people sometimes for half a minute) before the next trip.
+  void _hold(SceneObject p, BodyActivity a, double seconds) {
+    p.activity = a;
+    p.activityLeft = seconds;
+  }
+
+  /// One step of the [BodyActivity] machine: plan a trip, walk it with
+  /// human-like steering (limited turn rate, slowing for corners and on
+  /// arrival), then stand or rest for a while before the next one.
   void _natural(SceneObject p, double cruise, double dt,
-      {required bool standLong}) {
-    if (p.pause > 0) {
-      p.pause -= dt;
-      p.speed += (0 - p.speed) * math.min(1, dt * 3);
-      return;
+      {required bool animal}) {
+    switch (p.activity) {
+      case BodyActivity.pausing:
+      case BodyActivity.resting:
+        p.activityLeft -= dt;
+        p.speed += (0 - p.speed) * math.min(1, dt * 3);
+        if (p.activityLeft <= 0) p.activity = BodyActivity.idle;
+        return;
+      case BodyActivity.idle:
+        if (_planTrip(p)) {
+          p.legSpeed = cruise * (0.8 + 0.4 * _rng.nextDouble());
+          p.activity = BodyActivity.walking;
+        } else {
+          _hold(p, BodyActivity.pausing, 1 + _rng.nextDouble() * 2);
+        }
+        return;
+      case BodyActivity.walking:
+        break;
     }
     if (p.path.isEmpty) {
-      if (_planTrip(p)) {
-        p.legSpeed = cruise * (0.8 + 0.4 * _rng.nextDouble());
-      } else {
-        p.pause = 1 + _rng.nextDouble() * 2;
-      }
+      p.activity = BodyActivity.idle;
       return;
     }
     final tx = p.path[0], ty = p.path[1];
@@ -394,9 +408,20 @@ class SimRadarSource extends RadarSource {
     if (d < (last ? 0.15 : 0.25)) {
       p.path.removeRange(0, 2);
       if (p.path.isEmpty) {
-        p.pause = standLong && _rng.nextDouble() < 0.4
-            ? 12 + _rng.nextDouble() * 20
-            : 2 + _rng.nextDouble() * 6;
+        if (animal) {
+          if (_rng.nextDouble() < 0.6) {
+            _hold(p, BodyActivity.resting, 6 + _rng.nextDouble() * 14);
+          } else {
+            _hold(p, BodyActivity.pausing, 1 + _rng.nextDouble() * 3);
+          }
+        } else {
+          _hold(
+              p,
+              BodyActivity.pausing,
+              _rng.nextDouble() < 0.4
+                  ? 12 + _rng.nextDouble() * 20
+                  : 2 + _rng.nextDouble() * 6);
+        }
       }
       return;
     }
@@ -420,15 +445,15 @@ class SimRadarSource extends RadarSource {
       p.stuck = 0;
     } else {
       // About to clip a wall (e.g. cutting the corner of a doorway): stop
-      // and turn on the spot toward the waypoint. If the waypoint is not
-      // reachable from here, plan again from where we are.
+      // and turn on the spot toward the waypoint. If that does not help, or
+      // the waypoint is not reachable from here, drop the route and re-plan.
       p.speed *= 0.3;
       p.heading = math.atan2(dy, dx);
       p.stuck += dt;
       if (p.stuck > 0.8 || !_clear(p.x, p.y, tx, ty)) {
         p.path.clear();
         p.stuck = 0;
-        p.pause = 0.5;
+        _hold(p, BodyActivity.pausing, 0.5);
       }
     }
   }
@@ -813,7 +838,7 @@ class SimRadarSource extends RadarSource {
     tr.li.fillRange(0, Radar.gate, 0);
     tr.rr.fillRange(0, Radar.gate, 0);
     tr.ri.fillRange(0, Radar.gate, 0);
-    if (track.beamIndex < 0) tr.pointBeam(track);
+    if (track.beamIndex == null) tr.pointBeam(track);
     final th = _wrapBearing(track.beamBearing);
     final k0 = tr.mToBin(track.range);
     const sq = Radar.squint;

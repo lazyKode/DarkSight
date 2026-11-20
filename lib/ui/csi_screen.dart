@@ -42,7 +42,7 @@ class _CsiScreenState extends State<CsiScreen> {
       animation: _w,
       builder: (context, _) {
         final a = _w.active;
-        final state = a?.state ?? WifiState.noSignal;
+        final state = a?.stateAt(now) ?? WifiState.noSignal;
         final now = _w.now;
         return ListView(
           padding: const EdgeInsets.all(12),
@@ -135,7 +135,7 @@ class _CsiScreenState extends State<CsiScreen> {
       case WifiState.calibrating:
         title = 'CALIBRATING';
         sub = 'Keep the area empty and still · '
-            '${a!.calibrationLeft.ceil()} s';
+            '${a!.calibrationLeftAt(now).ceil()} s';
         c = kAmber;
         break;
       default:
@@ -192,21 +192,30 @@ class _CsiScreenState extends State<CsiScreen> {
 
   Widget _esp32Card() {
     final e = _w.esp32;
-    final live = _w.esp32Live;
-    final status = e.error ??
-        (live
-            ? 'Receiving: ${e.rate.toStringAsFixed(0)} readings/s, '
-                'link ${e.lastRssi} dBm'
-            : (e.host.isEmpty
-                ? 'Enter the IP the board prints on its Serial Monitor.'
-                : 'Waiting for data from ${e.host}…'));
+    final link = e.linkAt(live: _w.esp32Live);
+    final live = link == SensorLink.receiving;
+    final warn = link == SensorLink.portError ||
+        link == SensorLink.badAddress ||
+        link == SensorLink.unsupported ||
+        (link == SensorLink.waiting && e.sendError != null);
+    final status = switch (link) {
+      SensorLink.unsupported => 'Not possible in a web browser.',
+      SensorLink.portError => e.detail ?? 'Could not open the network port.',
+      SensorLink.needAddress =>
+        'Enter the IP the board prints on its Serial Monitor.',
+      SensorLink.badAddress => '"${e.host}" is not an IP address.',
+      SensorLink.waiting =>
+        e.sendError ?? 'Waiting for data from ${e.host}…',
+      SensorLink.receiving =>
+        'Receiving: ${e.rate.toStringAsFixed(0)} readings/s, link ${e.lastRssi} dBm',
+    };
     return _card(
       'ESP32 SENSOR (recommended)',
       live ? kPhosphor : kDim,
       [
         Text(status,
             style: TextStyle(
-                fontSize: 11, color: e.error != null ? kAmber : kDim)),
+                fontSize: 11, color: warn ? kAmber : kDim)),
         const SizedBox(height: 6),
         Row(
           children: [

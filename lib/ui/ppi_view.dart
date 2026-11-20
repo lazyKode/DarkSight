@@ -344,7 +344,9 @@ class PpiPainter extends CustomPainter {
     if (tentative) {
       tag = '$name  ACQUIRING';
     } else if (cls == null) {
-      tag = '$name  ANALYSING';
+      tag = t.classifier.verdict == Verdict.uncertain
+          ? '$name  UNCERTAIN'
+          : '$name  ANALYSING';
     } else {
       tag = '$name  ${cls.label} ${(t.classifier.confidence * 100).round()}%';
     }

@@ -21,46 +21,69 @@ Float64List frame(math.Random r, double t, {bool moving = false}) {
 void main() {
   test('calibrates on an empty room, then flags motion and clears it', () {
     final a = WifiMotionAnalyzer(
-        window: 1.0, relative: true, floor: 0.002, minAbove: 0.4);
+        window: 1.0, relative: true, floor: 0.002, minAbove: 0.4, staleAfter: 3);
     final r = math.Random(1);
     double t = 0;
-    a.startCalibration(0);
+    a.recalibrate();
     for (; t < 25; t += 0.02) {
       a.add(t, frame(r, t));
     }
     expect(a.threshold, isNotNull);
-    expect(a.state, WifiState.still);
+    expect(a.stateAt(t), WifiState.still);
     // Quiet room for a minute: no false alarms.
     for (; t < 85; t += 0.02) {
       a.add(t, frame(r, t));
-      expect(a.state, isNot(WifiState.motion));
+      expect(a.stateAt(t), isNot(WifiState.motion));
     }
     // Someone walks through.
     for (; t < 95; t += 0.02) {
       a.add(t, frame(r, t, moving: true));
     }
-    expect(a.state, WifiState.motion);
+    expect(a.stateAt(t), WifiState.motion);
     // They leave.
     for (; t < 105; t += 0.02) {
       a.add(t, frame(r, t));
     }
-    expect(a.state, WifiState.still);
+    expect(a.stateAt(t), WifiState.still);
     expect(t - a.lastMotion, lessThan(12));
   });
 
   test('motion during calibration makes it less sensitive, not trigger-happy',
       () {
     final a = WifiMotionAnalyzer(
-        window: 1.0, relative: true, floor: 0.002, minAbove: 0.4);
+        window: 1.0, relative: true, floor: 0.002, minAbove: 0.4, staleAfter: 3);
     final r = math.Random(2);
     double t = 0;
-    a.startCalibration(0);
+    a.recalibrate();
     for (; t < 25; t += 0.02) {
       a.add(t, frame(r, t, moving: true));
     }
     for (; t < 85; t += 0.02) {
       a.add(t, frame(r, t));
-      expect(a.state, isNot(WifiState.motion));
+      expect(a.stateAt(t), isNot(WifiState.motion));
     }
+  });
+
+  test('data stopping means no signal; recalibrating with no data waits', () {
+    final a = WifiMotionAnalyzer(
+        window: 1.0, relative: true, floor: 0.002, minAbove: 0.4, staleAfter: 3);
+    final r = math.Random(3);
+    expect(a.stateAt(0), WifiState.noSignal);
+    double t = 0;
+    for (; t < 25; t += 0.02) {
+      a.add(t, frame(r, t));
+    }
+    expect(a.stateAt(t), WifiState.still);
+    expect(a.stateAt(t + 10), WifiState.noSignal);
+    // Recalibrate while nothing is arriving: the 20 s start with new data.
+    a.recalibrate();
+    expect(a.threshold, isNull);
+    t += 100;
+    a.add(t, frame(r, t));
+    expect(a.calibrationLeftAt(t), greaterThan(19));
+    for (double end = t + 5; t < end; t += 0.02) {
+      a.add(t, frame(r, t));
+    }
+    expect(a.stateAt(t), WifiState.calibrating);
   });
 }

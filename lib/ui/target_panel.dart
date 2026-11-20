@@ -166,16 +166,26 @@ class _TargetPanelState extends State<TargetPanel> {
                           style: const TextStyle(
                               color: kDim, fontSize: 10, letterSpacing: 1.5)),
                       const SizedBox(height: 2),
-                      Text(cls?.label ?? 'ANALYSING',
+                      Text(
+                          switch (t.classifier.verdict) {
+                            Verdict.collecting => 'ANALYSING',
+                            Verdict.uncertain => 'UNCERTAIN',
+                            Verdict.decided => cls!.label,
+                          },
                           style: TextStyle(
                               color: color,
                               fontSize: 26,
                               fontWeight: FontWeight.w700,
                               letterSpacing: 3)),
                       Text(
-                          cls == null
-                              ? 'collecting signature (${t.classifier.updates}/3 s)'
-                              : '${cls.detail} · ${(t.classifier.confidence * 100).round()}% confidence',
+                          switch (t.classifier.verdict) {
+                            Verdict.collecting =>
+                              'collecting signature (${t.classifier.updates}/${TargetClassifier.looksNeeded} looks)',
+                            Verdict.uncertain =>
+                              'leaning ${t.classifier.leading.label.toLowerCase()}, not enough to decide',
+                            Verdict.decided =>
+                              '${cls!.detail} · ${(t.classifier.confidence * 100).round()}% confidence',
+                          },
                           style: const TextStyle(color: kDim, fontSize: 11)),
                     ],
                   ),

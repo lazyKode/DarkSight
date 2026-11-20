@@ -431,7 +431,7 @@ class _PlanPainter extends CustomPainter {
           canvas.drawCircle(Offset(len * 0.55, 0), wid * 0.45,
               Paint()..color = col);
           canvas.restore();
-          if (o.resting) {
+          if (o.activity == BodyActivity.resting) {
             paintLabel(canvas, 'z', c + Offset(len * 0.4, -wid), col, size: 9);
           }
           break;

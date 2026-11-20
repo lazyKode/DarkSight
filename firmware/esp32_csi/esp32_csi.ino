@@ -60,6 +60,14 @@ static uint32_t gSubscriberSeen = 0;
 static uint32_t gSeq = 0;
 static uint32_t gSent = 0, gDropped = 0, gLastReport = 0;
 
+// Link state. CSI is only meaningful while joined to the router, and the
+// router's MAC can change when the board reconnects (mesh / roaming).
+//   OFFLINE --(Wi-Fi up)--> BROADCAST --(app says hello)--> UNICAST
+//   UNICAST --(no hello for 10 s)--> BROADCAST
+//   any --(Wi-Fi lost)--> OFFLINE
+enum LinkState { OFFLINE, BROADCAST, UNICAST };
+static LinkState gLink = OFFLINE;
+
 // Runs in the Wi-Fi driver task: copy and hand off, nothing slow here.
 static void onCsi(void* ctx, wifi_csi_info_t* info) {
   if (info == nullptr || info->buf == nullptr) return;
@@ -143,11 +151,26 @@ void loop() {
     }
     sz = gUdp.parsePacket();
   }
+  const bool online = WiFi.status() == WL_CONNECTED;
   const bool haveSub =
       gSubscriberPort != 0 && millis() - gSubscriberSeen < 10000;
+  const LinkState next = !online ? OFFLINE : (haveSub ? UNICAST : BROADCAST);
+  if (next != gLink) {
+    if (gLink == OFFLINE) {
+      // (Re)joined: the access point may be a different one.
+      memcpy(gRouterMac, WiFi.BSSID(), 6);
+      Serial.print("Wi-Fi up. Board IP: ");
+      Serial.println(WiFi.localIP());
+    } else if (next == OFFLINE) {
+      Serial.println("Wi-Fi lost; waiting to reconnect...");
+      gSubscriberPort = 0;
+    }
+    gLink = next;
+  }
 
   CsiFrame f;
   while (xQueueReceive(gQueue, &f, 0) == pdTRUE) {
+    if (gLink == OFFLINE) continue;  // drain, nothing to send to
     uint8_t pkt[16 + kMaxCsi];
     memcpy(pkt, "DSCS", 4);
     pkt[4] = 1;
@@ -158,7 +181,7 @@ void loop() {
     memcpy(pkt + 8, &seq, 4);  // ESP32 is little endian
     memcpy(pkt + 12, &f.ms, 4);
     memcpy(pkt + 16, f.buf, f.len);
-    if (haveSub) {
+    if (gLink == UNICAST) {
       gUdp.beginPacket(gSubscriber, gSubscriberPort);
     } else {
       gUdp.beginPacket(IPAddress(255, 255, 255, 255), kPort);
@@ -172,7 +195,8 @@ void loop() {
     gLastReport = millis();
     Serial.printf("CSI sent %lu (%.0f/s), dropped %lu, app %s\n",
                   (unsigned long)gSent, gSent / 5.0, (unsigned long)gDropped,
-                  haveSub ? gSubscriber.toString().c_str() : "not connected");
+                  gLink == UNICAST ? gSubscriber.toString().c_str()
+                                   : (gLink == OFFLINE ? "n/a (Wi-Fi down)" : "not connected"));
     gSent = 0;
   }
   delay(1);

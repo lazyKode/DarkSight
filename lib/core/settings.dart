@@ -70,8 +70,18 @@ class AppSettings {
       );
 }
 
+/// Saved settings load asynchronously, so the store has states:
+///
+///   loading --(prefs read)--> ready      loading --(error)--> unavailable
+///
+/// A change the user makes while still loading wins: the saved values are
+/// then not applied over it, and it is written once the store is ready.
+enum _Store { loading, ready, unavailable }
+
 class SettingsNotifier extends Notifier<AppSettings> {
   SharedPreferences? _prefs;
+  _Store _store = _Store.loading;
+  bool _changedWhileLoading = false;
 
   @override
   AppSettings build() {
@@ -83,6 +93,11 @@ class SettingsNotifier extends Notifier<AppSettings> {
     try {
       final p = await SharedPreferences.getInstance();
       _prefs = p;
+      _store = _Store.ready;
+      if (_changedWhileLoading) {
+        _save(state);
+        return;
+      }
       final m = p.getInt('mode') ?? 0;
       state = state.copyWith(
         mode: RadarMode.values[m < 0 || m > 2 ? 0 : m],
@@ -98,11 +113,23 @@ class SettingsNotifier extends Notifier<AppSettings> {
       );
     } catch (_) {
       // Preferences are a convenience; run on defaults if unavailable.
+      _store = _Store.unavailable;
     }
   }
 
   void update(AppSettings s) {
     state = s;
+    switch (_store) {
+      case _Store.loading:
+        _changedWhileLoading = true;
+      case _Store.ready:
+        _save(s);
+      case _Store.unavailable:
+        break;
+    }
+  }
+
+  void _save(AppSettings s) {
     final p = _prefs;
     if (p == null) return;
     p.setInt('mode', s.mode.index);

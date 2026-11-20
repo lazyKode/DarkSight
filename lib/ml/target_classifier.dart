@@ -4,6 +4,13 @@ import '../dsp/track_processor.dart';
 
 enum TargetClass { human, dog, cat, machine }
 
+/// Where a track's classification stands.
+///
+///   collecting --(3 signature looks)---------------> uncertain / decided
+///   uncertain  --(best class reaches 50 %)---------> decided
+///   decided    --(best class falls below 50 %)-----> uncertain
+enum Verdict { collecting, uncertain, decided }
+
 extension TargetClassX on TargetClass {
   String get label => switch (this) {
         TargetClass.human => 'HUMAN',
@@ -192,9 +199,15 @@ class TargetClassifier {
     };
   }
 
-  /// Best class, or null until there is enough evidence.
-  TargetClass? get best {
-    if (updates < 3) return null;
+  static const int looksNeeded = 3;
+  static const double decideAt = 0.5;
+
+  Verdict get verdict {
+    if (updates < looksNeeded) return Verdict.collecting;
+    return posterior[_top]! >= decideAt ? Verdict.decided : Verdict.uncertain;
+  }
+
+  TargetClass get _top {
     final p = posterior;
     TargetClass bc = TargetClass.human;
     double bv = -1;
@@ -204,8 +217,14 @@ class TargetClassifier {
         bc = c;
       }
     });
-    return bv >= 0.5 ? bc : null;
+    return bc;
   }
+
+  /// Best class, or null unless the verdict is [Verdict.decided].
+  TargetClass? get best => verdict == Verdict.decided ? _top : null;
+
+  /// Most likely class so far, whatever the verdict.
+  TargetClass get leading => _top;
 
   double get confidence {
     final b = best;

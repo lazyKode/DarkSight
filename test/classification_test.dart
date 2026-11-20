@@ -24,9 +24,7 @@ import 'package:flutter_test/flutter_test.dart';
     ..y = y
     ..ax = x
     ..ay = y
-    ..behaviourTimer = natural ? 0 : 1e9
-    ..stayNear = !natural
-    ..resting = false;
+    ..stayNear = !natural;
   scene.touch();
   final radar = SimRadarSource(scene)
     ..sweepRate = 1.0
@@ -41,7 +39,6 @@ import 'package:flutter_test/flutter_test.dart';
     }
     if (t > stopAfter) {
       radar.personSpeed = 0;
-      body.resting = true;
     }
     radar.tick(dt);
   }
@@ -148,7 +145,7 @@ void main() {
             .join(' ');
         // ignore: avoid_print
         print('  t=${t.round()} truth speed=${b.speed.toStringAsFixed(2)} '
-            'resting=${b.resting} $ts');
+            '${b.activity.name} $ts');
       });
       // ignore: avoid_print
       print('${k.name} natural: ${describe(r.track)}');

@@ -9,6 +9,14 @@ import 'radar_source.dart';
 
 enum SdrTransport { mock, ble, udp }
 
+/// State of the link to the radio.
+///
+///   idle --start--> mock | noDecoder | binding
+///   binding --> listening | bindFailed
+///   listening <--> receiving   (receiving falls back after 2 s of silence)
+///   any --stop--> stopped
+enum SdrLink { idle, mock, noDecoder, binding, listening, receiving, bindFailed, stopped }
+
 /// A known external radio and how DarkSight expects to talk to it.
 class SdrProfile {
   const SdrProfile(this.name, this.match, this.transport, this.protocol,
@@ -109,7 +117,28 @@ class SdrRadarSource extends RadarSource {
   /// Bumped whenever new data is available for the views.
   int frameCount = 0;
   int packets = 0;
-  String status = 'idle';
+  SdrLink _link = SdrLink.idle;
+  String? _linkError;
+  final Stopwatch _wall = Stopwatch()..start();
+  int _lastPacketMs = -1 << 30;
+
+  SdrLink get link =>
+      _link == SdrLink.receiving && _wall.elapsedMilliseconds - _lastPacketMs > 2000
+          ? SdrLink.listening
+          : _link;
+
+  String get status => switch (link) {
+        SdrLink.idle => 'idle',
+        SdrLink.mock => 'streaming (mock IQ)',
+        SdrLink.noDecoder => 'linked; no decoder for this device yet',
+        SdrLink.binding => 'opening UDP $udpPort…',
+        SdrLink.listening => packets == 0
+            ? 'listening on UDP $udpPort'
+            : 'no frames for 2 s; listening on UDP $udpPort',
+        SdrLink.receiving => 'receiving DSRD frames ($packets)',
+        SdrLink.bindFailed => 'UDP bind failed: $_linkError',
+        SdrLink.stopped => 'disconnected',
+      };
 
   /// Recent detections, newest last, for the point cloud's persistence.
   final List<List<RadarPoint>> history = [];
@@ -127,9 +156,9 @@ class SdrRadarSource extends RadarSource {
     if (device.transport == SdrTransport.udp) {
       _bindUdp();
     } else if (device.transport == SdrTransport.mock) {
-      status = 'streaming (mock IQ)';
+      _link = SdrLink.mock;
     } else {
-      status = 'linked; no decoder for this device yet';
+      _link = SdrLink.noDecoder;
     }
   }
 
@@ -137,6 +166,7 @@ class SdrRadarSource extends RadarSource {
   void stop() {
     _socket?.close();
     _socket = null;
+    _link = SdrLink.stopped;
   }
 
   @override
@@ -144,7 +174,7 @@ class SdrRadarSource extends RadarSource {
 
   @override
   void tick(double dt) {
-    if (device.transport != SdrTransport.mock) return;
+    if (_link != SdrLink.mock) return;
     if (dt > 0.2) dt = 0.2;
     _acc += dt;
     final period = 1 / frameHz;
@@ -227,10 +257,15 @@ class SdrRadarSource extends RadarSource {
   // ---- UDP link ----
 
   Future<void> _bindUdp() async {
+    _link = SdrLink.binding;
     try {
       final s = await RawDatagramSocket.bind(InternetAddress.anyIPv4, udpPort);
+      if (_link != SdrLink.binding) {
+        s.close(); // stopped while the port was opening
+        return;
+      }
       _socket = s;
-      status = 'listening on UDP $udpPort';
+      _link = SdrLink.listening;
       s.listen((event) {
         if (event != RawSocketEvent.read) return;
         Datagram? d = s.receive();
@@ -240,7 +275,10 @@ class SdrRadarSource extends RadarSource {
         }
       });
     } catch (e) {
-      status = 'UDP bind failed: $e';
+      if (_link == SdrLink.binding) {
+        _linkError = '$e';
+        _link = SdrLink.bindFailed;
+      }
     }
   }
 
@@ -270,7 +308,8 @@ class SdrRadarSource extends RadarSource {
       }
     }
     packets++;
-    status = 'receiving DSRD frames ($packets)';
+    _lastPacketMs = _wall.elapsedMilliseconds;
+    _link = SdrLink.receiving;
     frameCount++;
   }
 }

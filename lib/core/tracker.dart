@@ -5,7 +5,72 @@ import '../dsp/radar_constants.dart';
 import '../dsp/track_processor.dart';
 import '../ml/target_classifier.dart';
 
+/// Track lifecycle. Every transition is in [TrackLifecycle.next].
+///
+///   tentative --(evidence for 0.6 s in a row, age > 1 s)--> confirmed
+///   tentative --(age > 4 s and no evidence for 1 s)-------> deleted
+///   confirmed --(no evidence for 1.5 s)--------------------> coasting
+///   coasting  --(evidence again)---------------------------> confirmed
+///   coasting  --(no evidence for 10 s)---------------------> deleted
+///   any       --(outside the range window)----------------> deleted
 enum TrackStatus { tentative, confirmed, coasting }
+
+class TrackLifecycle {
+  static const double confirmAfter = 0.6; // s of continuous evidence
+  static const double minAgeToConfirm = 1.0;
+  static const double dropTentativeAge = 4.0;
+  static const double dropTentativeSilence = 1.0;
+  static const double coastAfter = 1.5;
+  static const double dropAfter = 10.0;
+
+  /// Next status, or null when the track should be deleted.
+  static TrackStatus? next(TrackStatus s,
+      {required double age,
+      required double sinceEvidence,
+      required double evidenceStreak,
+      required bool inRange}) {
+    if (!inRange) return null;
+    switch (s) {
+      case TrackStatus.tentative:
+        if (evidenceStreak >= confirmAfter && age > minAgeToConfirm) {
+          return TrackStatus.confirmed;
+        }
+        if (age > dropTentativeAge && sinceEvidence > dropTentativeSilence) {
+          return null;
+        }
+        return TrackStatus.tentative;
+      case TrackStatus.confirmed:
+        return sinceEvidence > coastAfter
+            ? TrackStatus.coasting
+            : TrackStatus.confirmed;
+      case TrackStatus.coasting:
+        if (sinceEvidence > dropAfter) return null;
+        return sinceEvidence == 0 ? TrackStatus.confirmed : TrackStatus.coasting;
+    }
+  }
+}
+
+/// Whether a track is walking, standing, or in between, with hysteresis so
+/// a target hovering around one speed does not flicker between phases.
+///
+///   still  --(speed > 0.25 m/s)--> moving
+///   moving --(speed < 0.15 m/s)--> still
+///   unsure --(either threshold)--> moving / still
+enum MotionPhase {
+  unsure,
+  still,
+  moving;
+
+  static const double moveAbove = 0.25, stillBelow = 0.15;
+
+  MotionPhase next(double speed) => switch (this) {
+        MotionPhase.moving => speed < stillBelow ? MotionPhase.still : this,
+        MotionPhase.still => speed > moveAbove ? MotionPhase.moving : this,
+        MotionPhase.unsure => speed > moveAbove
+            ? MotionPhase.moving
+            : (speed < stillBelow ? MotionPhase.still : this),
+      };
+}
 
 /// One tracked target. Positions are metres relative to the radar
 /// (x right, y down on screen).
@@ -16,8 +81,8 @@ class Track {
   /// Where the dwell beam points: a fixed grid position, held steady (static
   /// clutter must look the same chirp to chirp for MTI to cancel it) and
   /// moved only when the target drifts past half a grid step.
-  double beamBearing = double.nan;
-  int beamIndex = -1;
+  double beamBearing = 0;
+  int? beamIndex; // null until pointed (and after clutter is forgotten)
 
   final int id;
   double x, y;
@@ -25,8 +90,7 @@ class Track {
   TrackStatus status = TrackStatus.tentative;
   double age = 0;
   double sinceEvidence = 0; // s since the dwell last saw energy
-  double confirmTime = 0;
-  double stillTime = 0; // s with speed below the still threshold
+  double evidenceStreak = 0; // s of evidence without a gap
   double radialVelocity = 0;
   double excess = 0;
   int walls = 0; // detected walls between radar and target
@@ -50,13 +114,16 @@ class Track {
   final List<double> trail = [];
   double _trailT = 0;
 
-  bool get moving => speed > 0.25;
-  bool get still => speed < 0.15;
+  /// Walking or standing (see [MotionPhase]) and for how long, so a
+  /// signature window never mixes the two.
+  MotionPhase phase = MotionPhase.unsure;
+  double phaseTime = 0;
 
-  /// Seconds in the current motion state (moving / still), so a signature
-  /// window never mixes walking with resting.
-  double stateTime = 0;
-  int _state = 0;
+  bool get moving => phase == MotionPhase.moving;
+  bool get still => phase == MotionPhase.still;
+  double get stillTime => still ? phaseTime : 0;
+
+  bool _dead = false;
 }
 
 /// Track management: initiation from search-sweep motion detections,
@@ -114,7 +181,7 @@ class Tracker {
   /// Called by the radar after each dwell chirp for [t], with the channel
   /// buffers filled.
   void onChirp(Track t, int k0) {
-    if (t.beamIndex < 0) _point(t);
+    if (t.beamIndex == null) _point(t);
     final m = t.processor.push(k0, lr, li, rr, ri);
     if (m != null) _measure(t, m, Radar.hop / Radar.prf);
   }
@@ -126,6 +193,7 @@ class Tracker {
     t.excess = m.excess;
     if (m.excess > 0.35) {
       t.sinceEvidence = 0;
+      t.evidenceStreak += dt;
       final r = binToM(m.range);
       final th = t.beamBearing + m.angleOffset;
       final mx = r * math.cos(th), my = r * math.sin(th);
@@ -140,7 +208,8 @@ class Tracker {
       t.radialVelocity = m.radialVelocity;
     } else {
       t.sinceEvidence += dt;
-      // Coasting: bleed velocity.
+      t.evidenceStreak = 0;
+      // No evidence: bleed velocity.
       t.vx *= 0.97;
       t.vy *= 0.97;
     }
@@ -177,7 +246,6 @@ class Tracker {
     if (doFeatures) _featureClock = 0;
     for (final t in tracks) {
       t.age += dt;
-      t.stillTime = t.still ? t.stillTime + dt : 0;
       t._trailT += dt;
       if (t._trailT >= 0.25) {
         t._trailT = 0;
@@ -186,28 +254,28 @@ class Tracker {
           ..add(t.y);
         if (t.trail.length > 64) t.trail.removeRange(0, 2);
       }
-      if (t.status == TrackStatus.tentative) {
-        if (t.sinceEvidence == 0 && t.age > 1.0) {
-          t.confirmTime += dt;
-          if (t.confirmTime > 0.6) t.status = TrackStatus.confirmed;
-        }
-      } else {
-        t.status = t.sinceEvidence > 1.5
-            ? TrackStatus.coasting
-            : TrackStatus.confirmed;
+      final next = TrackLifecycle.next(t.status,
+          age: t.age,
+          sinceEvidence: t.sinceEvidence,
+          evidenceStreak: t.evidenceStreak,
+          inRange: t.range <= maxRange);
+      if (next == null) {
+        t._dead = true;
+        continue;
       }
-      final st = t.moving ? 1 : (t.still ? -1 : 0);
-      if (st != t._state) {
-        t._state = st;
-        t.stateTime = 0;
+      t.status = next;
+      final phase = t.phase.next(t.speed);
+      if (phase != t.phase) {
+        t.phase = phase;
+        t.phaseTime = 0;
       } else {
-        t.stateTime += dt;
+        t.phaseTime += dt;
       }
       if (doFeatures && t.status != TrackStatus.tentative) {
         t.walls = wallsTo?.call(t.x, t.y) ?? 0;
         // Look only at the time since the target last started or stopped.
-        final window = math.min(8.5, t.stateTime);
-        if (st != 0 && window >= 3.2) {
+        final window = math.min(8.5, t.phaseTime);
+        if (t.phase != MotionPhase.unsure && window >= 3.2) {
           t.features = t.processor.features(
             rangeM: math.max(t.range, 0.5),
             maxRange: maxRange,
@@ -220,10 +288,7 @@ class Tracker {
         }
       }
     }
-    tracks.removeWhere((t) =>
-        (t.status == TrackStatus.tentative && t.age > 4 && t.sinceEvidence > 1) ||
-        t.sinceEvidence > 10 ||
-        t.range > maxRange);
+    tracks.removeWhere((t) => t._dead);
     // Merge duplicates: keep the older track.
     for (int i = 0; i < tracks.length; i++) {
       for (int j = tracks.length - 1; j > i; j--) {
@@ -238,7 +303,7 @@ class Tracker {
   void clearClutter() {
     _clutter.clear();
     for (final t in tracks) {
-      t.beamIndex = -1;
+      t.beamIndex = null;
     }
   }
 

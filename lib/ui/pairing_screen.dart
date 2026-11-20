@@ -8,19 +8,40 @@ import 'theme.dart';
 /// built-in mock, pick a device, detect its protocol, report link status.
 class PairingScreen extends StatefulWidget {
   const PairingScreen({super.key, required this.onConnected});
-  final void Function(SdrDevice device) onConnected;
+  /// [release] closes the link (BLE); call it on disconnect.
+  final void Function(SdrDevice device, Future<void> Function()? release)
+      onConnected;
 
   @override
   State<PairingScreen> createState() => _PairingScreenState();
 }
 
+/// Pairing flow. One device at a time; scanning and pairing exclude each
+/// other.
+///
+///   idle --tap device--> connecting --> detecting --> connected --> (handed off)
+///   connecting --link failed--> idle
+///   idle --SCAN--> scanning --finished / tap device--> idle / connecting
+enum _Pairing { idle, scanning, connecting, detecting, connected }
+
 class _PairingScreenState extends State<PairingScreen> {
   final BleScanner _ble = BleScanner();
   List<BleFound> _found = const [];
-  bool _scanning = false;
+  _Pairing _stage = _Pairing.idle;
+  String? _busyId; // device being paired, in connecting..connected
+  String _protocol = '';
   String? _bleNote;
-  String? _busyId;
-  String _stage = '';
+  int _scanRun = 0; // identifies the current scan; stale results are ignored
+  bool _handedOff = false;
+
+  bool get _scanning => _stage == _Pairing.scanning;
+
+  String get _stageText => switch (_stage) {
+        _Pairing.connecting => 'Connecting...',
+        _Pairing.detecting => 'Detecting protocol...',
+        _Pairing.connected => 'Connected: $_protocol',
+        _ => '',
+      };
 
   static const SdrDevice _mock = SdrDevice(
       id: 'mock', name: 'DarkSight mock FMCW (built in)', transport: SdrTransport.mock);
@@ -32,72 +53,80 @@ class _PairingScreenState extends State<PairingScreen> {
   @override
   void dispose() {
     _ble.stop();
+    // A link opened here but never handed to the radar screen is closed.
+    final id = _busyId;
+    if (id != null && !_handedOff) _ble.disconnect(id);
     super.dispose();
   }
 
   Future<void> _scan() async {
+    if (_stage != _Pairing.idle) return;
+    final run = ++_scanRun;
     setState(() {
-      _scanning = true;
+      _stage = _Pairing.scanning;
       _bleNote = null;
       _found = const [];
     });
     final err = await _ble.start((list) {
-      if (mounted) setState(() => _found = list);
+      if (mounted && run == _scanRun) setState(() => _found = list);
     });
-    if (!mounted) return;
+    if (!mounted || run != _scanRun || _stage != _Pairing.scanning) return;
     setState(() {
-      _scanning = false;
+      _stage = _Pairing.idle;
       _bleNote = err ??
           (_found.isEmpty ? 'Scan finished: no named BLE devices nearby.' : null);
     });
   }
 
   Future<void> _connect(SdrDevice d) async {
-    if (_busyId != null) return;
+    if (_stage != _Pairing.idle && _stage != _Pairing.scanning) return;
+    _scanRun++; // abandon any scan in progress
     setState(() {
+      _stage = _Pairing.connecting;
       _busyId = d.id;
-      _stage = 'Connecting...';
     });
-    String linkNote = '';
+    await _ble.stop();
     if (d.transport == SdrTransport.ble) {
-      await _ble.stop();
-      linkNote = await _ble.connect(d.id);
+      final link = await _ble.connect(d.id);
       if (!mounted) return;
-      if (!linkNote.startsWith('Connected')) {
+      if (!link.ok) {
         setState(() {
+          _stage = _Pairing.idle;
           _busyId = null;
-          _stage = '';
         });
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(linkNote)));
+            .showSnackBar(SnackBar(content: Text(link.message)));
         return;
       }
     } else {
       await Future<void>.delayed(const Duration(milliseconds: 350));
     }
     if (!mounted) return;
-    setState(() => _stage = 'Detecting protocol...');
+    setState(() => _stage = _Pairing.detecting);
     await Future<void>.delayed(const Duration(milliseconds: 350));
     if (!mounted) return;
     final profile = d.profile ?? matchProfile(d.name);
-    final protocol = switch (d.transport) {
-      SdrTransport.mock => 'Raw IQ cube (in-process)',
-      SdrTransport.udp => 'DSRD range-Doppler frames',
-      SdrTransport.ble => profile?.protocol ?? 'Unknown GATT device',
-    };
-    setState(() => _stage = 'Connected: $protocol');
+    setState(() {
+      _protocol = switch (d.transport) {
+        SdrTransport.mock => 'Raw IQ cube (in-process)',
+        SdrTransport.udp => 'DSRD range-Doppler frames',
+        SdrTransport.ble => profile?.protocol ?? 'Unknown GATT device',
+      };
+      _stage = _Pairing.connected;
+    });
     await Future<void>.delayed(const Duration(milliseconds: 300));
     if (!mounted) return;
-    setState(() {
-      _busyId = null;
-      _stage = '';
-    });
-    widget.onConnected(SdrDevice(
-        id: d.id,
-        name: d.name,
-        transport: d.transport,
-        rssi: d.rssi,
-        profile: profile));
+    _handedOff = true;
+    final ble = _ble;
+    final id = d.id;
+    widget.onConnected(
+        SdrDevice(
+            id: d.id,
+            name: d.name,
+            transport: d.transport,
+            rssi: d.rssi,
+            profile: profile),
+        d.transport == SdrTransport.ble ? () => ble.disconnect(id) : null);
   }
 
   Widget _tile(SdrDevice d, IconData icon, String subtitle) {
@@ -112,7 +141,7 @@ class _PairingScreenState extends State<PairingScreen> {
         dense: true,
         leading: Icon(icon, color: kPhosphor),
         title: Text(d.name, style: const TextStyle(fontSize: 13)),
-        subtitle: Text(busy ? _stage : subtitle,
+        subtitle: Text(busy ? _stageText : subtitle,
             style: TextStyle(fontSize: 11, color: busy ? kAmber : kDim)),
         trailing: busy
             ? const SizedBox(

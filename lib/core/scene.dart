@@ -5,6 +5,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'bodies.dart';
 
+/// What a simulated body is doing in natural movement. Transitions are in
+/// SimRadarSource._natural:
+///
+///   idle     --(route found)--> walking     idle --(no route)--> pausing
+///   walking  --(arrived)------> pausing (people) / resting or pausing (pets)
+///   walking  --(blocked)------> pausing (0.5 s), then idle to re-plan
+///   pausing / resting --(timer runs out)--> idle
+enum BodyActivity { idle, walking, pausing, resting }
+
 enum ObjKind { wall, door, furniture, person, dog, cat, fan }
 
 extension ObjKindX on ObjKind {
@@ -70,14 +79,13 @@ class SceneObject {
   double heading = 0;
   double gait = 0;
   double speed = 0; // current ground speed, m/s
-  double behaviourTimer = 0; // animals: seconds left in walk / rest bout
-  bool resting = false;
+  BodyActivity activity = BodyActivity.idle;
+  double activityLeft = 0; // s left pausing / resting
   bool held = false;
 
-  // Natural movement: waypoints still to visit (x, y pairs), seconds left
-  // standing still, and this leg's walking speed.
+  // Natural movement: waypoints still to visit (x, y pairs) and this
+  // leg's walking speed.
   final List<double> path = [];
-  double pause = 0;
   double legSpeed = 1.0;
   double stuck = 0; // seconds unable to make progress
 

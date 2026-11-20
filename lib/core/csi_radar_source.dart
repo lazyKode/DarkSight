@@ -21,7 +21,26 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// radio path compared with the empty room it was calibrated on. Not where
 /// it is, not what it is, and not a person who is perfectly still.
 
-enum WifiState { unavailable, noSignal, calibrating, still, motion }
+/// What the screen shows.
+enum WifiState { noSignal, calibrating, still, motion }
+
+/// Internal phases of [WifiMotionAnalyzer]. All transitions happen in
+/// [WifiMotionAnalyzer.add]:
+///
+///   calibrating --(20 s of data)----------------------------> quiet
+///   quiet       --(metric > threshold)----------------------> rising
+///   rising      --(still above after minAbove)-------------> motion
+///   rising      --(drops back below)-------------------------> quiet
+///   motion      --(metric < 80 % of threshold)-------------> falling
+///   falling     --(back above 80 %)--------------------------> motion
+///   falling     --(below for 2 s)----------------------------> quiet
+///   any         --(recalibrate)------------------------------> calibrating
+///
+/// Before any data the analyzer is [_Phase.calibrating] with no deadline:
+/// the 20 s start with the first sample. Data that stops arriving is not a
+/// phase: [stateAt] reports [WifiState.noSignal] once it is stale, whatever
+/// phase the analyzer was in.
+enum _Phase { calibrating, quiet, rising, motion, falling }
 
 /// Motion detection on a stream of signal vectors.
 ///
@@ -31,62 +50,75 @@ enum WifiState { unavailable, noSignal, calibrating, still, motion }
 /// RSSI, the variance in dB^2.
 ///
 /// Threshold: learned during calibration with the area empty and still:
-/// median + 6 robust standard deviations of the metric, with a floor. Motion
-/// must stay above it for a moment to count, and stay below 80 % of it for 2
-/// seconds to clear. If calibration happens with someone moving, the
-/// threshold comes out high and the detector is less sensitive; it does not
-/// produce false alarms.
+/// median + 6 robust standard deviations of the metric, with a floor. If
+/// calibration happens with someone moving, the threshold comes out high
+/// and the detector is less sensitive; it does not produce false alarms.
 class WifiMotionAnalyzer {
   WifiMotionAnalyzer(
       {required this.window,
       required this.relative,
       required this.floor,
-      required this.minAbove});
+      required this.minAbove,
+      required this.staleAfter});
 
   final double window; // s
   final bool relative; // CSI: variance relative to mean^2
   final double floor; // smallest allowed threshold
   final double minAbove; // s above threshold before declaring motion
+  final double staleAfter; // s without data before "no signal"
+
+  static const double calibrationSeconds = 20;
+  static const double clearAfter = 2;
 
   final List<double> _t = [];
   final List<Float64List> _x = [];
   Float64List _sum = Float64List(0), _sum2 = Float64List(0);
 
   double metric = 0;
-  double? threshold;
-  WifiState state = WifiState.noSignal;
   double lastMotion = double.negativeInfinity;
   double lastData = double.negativeInfinity;
 
-  bool _calibrating = false;
-  double _calibEnd = 0;
+  _Phase _phase = _Phase.calibrating;
+  double _phaseSince = 0;
+  double? _calibEnd; // set by the first sample of a calibration
   final List<double> _calib = [];
-  double _aboveSince = double.nan, _belowSince = double.nan;
+  double? _threshold; // non-null in every phase except calibrating
+
+  double? get threshold => _threshold;
 
   // History for display: (time, metric) pairs.
   final List<double> histT = [], histM = [];
   static const double histSeconds = 60;
 
-  static const double calibrationSeconds = 20;
-  double get calibrationLeft => math.max(0, _calibEnd - lastData);
-
-  void startCalibration(double now) {
-    _calibrating = true;
-    _calibEnd = now + calibrationSeconds;
-    _calib.clear();
-    threshold = null;
-    state = WifiState.calibrating;
+  double calibrationLeftAt(double now) {
+    final end = _calibEnd;
+    if (_phase != _Phase.calibrating) return 0;
+    return end == null ? calibrationSeconds : math.max(0, end - now);
   }
 
-  void reset() {
-    _t.clear();
-    _x.clear();
-    _sum = Float64List(0);
-    histT.clear();
-    histM.clear();
-    threshold = null;
-    _calibrating = false;
-    state = WifiState.noSignal;
+  bool liveAt(double now) => now - lastData < staleAfter;
+
+  WifiState stateAt(double now) {
+    if (!liveAt(now)) return WifiState.noSignal;
+    return switch (_phase) {
+      _Phase.calibrating => WifiState.calibrating,
+      _Phase.quiet || _Phase.rising => WifiState.still,
+      _Phase.motion || _Phase.falling => WifiState.motion,
+    };
+  }
+
+  void _go(_Phase p, double t) {
+    _phase = p;
+    _phaseSince = t;
+  }
+
+  /// Start (or restart) learning the empty room. Works whether or not data
+  /// is flowing right now: the 20 s begin with the next sample.
+  void recalibrate() {
+    _phase = _Phase.calibrating;
+    _calibEnd = null;
+    _calib.clear();
+    _threshold = null;
   }
 
   void add(double t, Float64List x) {
@@ -95,6 +127,13 @@ class WifiMotionAnalyzer {
       _x.clear();
       _sum = Float64List(x.length);
       _sum2 = Float64List(x.length);
+    }
+    // A gap in the data invalidates the sliding window.
+    if (_t.isNotEmpty && t - _t.last > staleAfter) {
+      _t.clear();
+      _x.clear();
+      _sum.fillRange(0, _sum.length, 0);
+      _sum2.fillRange(0, _sum2.length, 0);
     }
     _t.add(t);
     _x.add(x);
@@ -127,50 +166,48 @@ class WifiMotionAnalyzer {
       histT.removeAt(0);
       histM.removeAt(0);
     }
+    _step(t);
+  }
 
-    if (_calibrating) {
-      _calib.add(metric);
-      if (t >= _calibEnd && _calib.length >= 10) {
-        final s = List<double>.from(_calib)..sort();
-        final med = s[s.length ~/ 2];
-        final dev = s.map((v) => (v - med).abs()).toList()..sort();
-        final mad = dev[dev.length ~/ 2] * 1.4826;
-        threshold = math.max(med + 6 * mad, math.max(floor, med * 1.5));
-        _calibrating = false;
-        state = WifiState.still;
-      } else {
-        state = WifiState.calibrating;
-      }
-      return;
-    }
-    final thr = threshold;
-    if (thr == null) {
-      state = WifiState.calibrating;
-      return;
-    }
-    if (metric > thr) {
-      _belowSince = double.nan;
-      if (_aboveSince.isNaN) _aboveSince = t;
-      if (t - _aboveSince >= minAbove) {
-        state = WifiState.motion;
-        lastMotion = t;
-      }
-    } else {
-      _aboveSince = double.nan;
-      if (state == WifiState.motion) {
-        if (metric < 0.8 * thr) {
-          if (_belowSince.isNaN) _belowSince = t;
-          if (t - _belowSince >= 2) state = WifiState.still;
-        } else {
-          _belowSince = double.nan;
+  void _step(double t) {
+    switch (_phase) {
+      case _Phase.calibrating:
+        _calibEnd ??= t + calibrationSeconds;
+        _calib.add(metric);
+        if (t >= _calibEnd! && _calib.length >= 10) {
+          final s = List<double>.from(_calib)..sort();
+          final med = s[s.length ~/ 2];
+          final dev = s.map((v) => (v - med).abs()).toList()..sort();
+          final mad = dev[dev.length ~/ 2] * 1.4826;
+          _threshold = math.max(med + 6 * mad, math.max(floor, med * 1.5));
+          _go(_Phase.quiet, t);
+        }
+      case _Phase.quiet:
+        if (metric > _threshold!) _go(_Phase.rising, t);
+      case _Phase.rising:
+        if (metric <= _threshold!) {
+          _go(_Phase.quiet, t);
+        } else if (t - _phaseSince >= minAbove) {
+          _go(_Phase.motion, t);
           lastMotion = t;
         }
-      } else {
-        state = WifiState.still;
-      }
+      case _Phase.motion:
+        lastMotion = t;
+        if (metric < 0.8 * _threshold!) _go(_Phase.falling, t);
+      case _Phase.falling:
+        if (metric >= 0.8 * _threshold!) {
+          _go(_Phase.motion, t);
+          lastMotion = t;
+        } else if (t - _phaseSince >= clearAfter) {
+          _go(_Phase.quiet, t);
+        }
     }
   }
 }
+
+/// State of the link to the ESP32 sensor, derived in one place
+/// ([Esp32CsiLink.linkAt]) instead of from scattered error strings.
+enum SensorLink { unsupported, portError, needAddress, badAddress, waiting, receiving }
 
 /// Receives CSI from the ESP32 sensor over UDP port 4211.
 class Esp32CsiLink {
@@ -178,7 +215,8 @@ class Esp32CsiLink {
   RawDatagramSocket? _sock;
   Timer? _hello;
   String host = '';
-  String? error;
+  String? _bindError;
+  String? sendError;
   int packets = 0;
   double rate = 0; // packets / s
   int lastRssi = 0;
@@ -193,10 +231,7 @@ class Esp32CsiLink {
   void Function(double t, Float64List amps)? onFrame;
 
   Future<void> start(double Function() clock) async {
-    if (kIsWeb) {
-      error = 'Not possible in a web browser.';
-      return;
-    }
+    if (kIsWeb) return;
     try {
       _sock = await RawDatagramSocket.bind(InternetAddress.anyIPv4, port,
           reuseAddress: true);
@@ -212,23 +247,35 @@ class Esp32CsiLink {
       _hello = Timer.periodic(const Duration(seconds: 2), (_) => sayHello());
       sayHello();
     } catch (e) {
-      error = 'Could not open UDP port $port: $e';
+      _bindError = 'Could not open UDP port $port: $e';
     }
   }
 
-  void sayHello() {
+  InternetAddress? get _address {
     final h = host.trim();
-    if (h.isEmpty || _sock == null) return;
+    return h.isEmpty ? null : InternetAddress.tryParse(h);
+  }
+
+  SensorLink linkAt({required bool live}) {
+    if (kIsWeb) return SensorLink.unsupported;
+    if (_bindError != null) return SensorLink.portError;
+    if (live) return SensorLink.receiving;
+    if (host.trim().isEmpty) return SensorLink.needAddress;
+    if (_address == null) return SensorLink.badAddress;
+    return SensorLink.waiting;
+  }
+
+  String? get detail => _bindError ?? sendError;
+
+  void sayHello() {
+    final addr = _address;
+    final sock = _sock;
+    if (addr == null || sock == null) return;
     try {
-      final addr = InternetAddress.tryParse(h);
-      if (addr == null) {
-        error = '"$h" is not an IP address.';
-        return;
-      }
-      error = null;
-      _sock!.send('DSHELLO'.codeUnits, addr, port);
+      sock.send('DSHELLO'.codeUnits, addr, port);
+      sendError = null;
     } catch (e) {
-      error = 'Could not reach $h: $e';
+      sendError = 'Could not reach ${host.trim()}: $e';
     }
   }
 
@@ -288,9 +335,9 @@ class WifiSensing extends ChangeNotifier {
 
   final Esp32CsiLink esp32 = Esp32CsiLink();
   final WifiMotionAnalyzer csi = WifiMotionAnalyzer(
-      window: 1.0, relative: true, floor: 0.002, minAbove: 0.4);
+      window: 1.0, relative: true, floor: 0.002, minAbove: 0.4, staleAfter: 3);
   final WifiMotionAnalyzer rssi = WifiMotionAnalyzer(
-      window: 6.0, relative: false, floor: 0.6, minAbove: 1.0);
+      window: 6.0, relative: false, floor: 0.6, minAbove: 1.0, staleAfter: 6);
 
   /// Why phone RSSI can't be used here, or null when it works.
   String? rssiUnavailable;
@@ -305,8 +352,8 @@ class WifiSensing extends ChangeNotifier {
   Timer? _poll, _ui;
   bool _disposed = false;
 
-  bool get esp32Live => now - csi.lastData < 3;
-  bool get rssiLive => rssiUnavailable == null && now - rssi.lastData < 6;
+  bool get esp32Live => csi.liveAt(now);
+  bool get rssiLive => rssiUnavailable == null && rssi.liveAt(now);
 
   /// The source the big indicator follows.
   WifiMotionAnalyzer? get active =>
@@ -315,7 +362,6 @@ class WifiSensing extends ChangeNotifier {
   Future<void> start() async {
     if (kIsWeb) {
       rssiUnavailable = 'A web browser cannot read Wi-Fi signals.';
-      esp32.error = 'A web browser cannot receive the sensor\'s data.';
       notifyListeners();
       return;
     }
@@ -330,9 +376,6 @@ class WifiSensing extends ChangeNotifier {
       esp32.host = p.getString('esp32Host') ?? '';
     } catch (_) {}
     esp32.onFrame = (t, v) {
-      if (csi.state == WifiState.noSignal && csi.threshold == null) {
-        csi.startCalibration(t);
-      }
       csi.add(t, v);
       waterfall.add(v);
       if (waterfall.length > 300) waterfall.removeAt(0);
@@ -372,9 +415,6 @@ class WifiSensing extends ChangeNotifier {
     if (v != _prevRssi) rssiUpdates++;
     _prevRssi = v;
     lastRssi = v;
-    if (rssi.state == WifiState.noSignal && rssi.threshold == null) {
-      rssi.startCalibration(t);
-    }
     rssi.add(t, Float64List.fromList([v.toDouble()]));
     rssiHist.add(v.toDouble());
     rssiHistT.add(t);
@@ -385,8 +425,8 @@ class WifiSensing extends ChangeNotifier {
   }
 
   void calibrate() {
-    if (esp32Live) csi.startCalibration(now);
-    if (rssiLive) rssi.startCalibration(now);
+    csi.recalibrate();
+    rssi.recalibrate();
     notifyListeners();
   }
 
