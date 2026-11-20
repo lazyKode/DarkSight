@@ -41,9 +41,9 @@ class _CsiScreenState extends State<CsiScreen> {
     return AnimatedBuilder(
       animation: _w,
       builder: (context, _) {
+        final now = _w.now;
         final a = _w.active;
         final state = a?.stateAt(now) ?? WifiState.noSignal;
-        final now = _w.now;
         return ListView(
           padding: const EdgeInsets.all(12),
           children: [
